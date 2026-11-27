@@ -67,7 +67,7 @@ internal class ChangeSummariesViewState(
     }
 
     fun browse(identity: String?, tree: ReviewSummaryTree) {
-        val node = tree.nodes.firstOrNull { it.identity == identity }?.let { tree.shown(it.id) }
+        val node = tree.byIdentity(identity)?.let { tree.shown(it.id) }
         explorerPath = node?.let { generateSequence(it) { current -> tree.shownParent(current) }
             .toList().asReversed().map { it.identity } }.orEmpty()
     }
@@ -188,7 +188,7 @@ internal class ChangeSummariesViewState(
                 expanded += node.identity
             else if (level != null) folded += node.identity
         }
-        if (tree.nodes.none { it.identity == selected }) selected = null
+        if (tree.byIdentity(selected) == null) selected = null
         val identities = tree.nodes.mapTo(hashSetOf()) { it.identity }
         // Refreshes can merge away the current folder or introduce newly visible parents.
         browse(explorerPath.takeWhile { it in identities }.lastOrNull(), tree)
@@ -235,7 +235,7 @@ internal class ChangeSummariesViewState(
      */
     override fun showTrace(tree: ReviewSummaryTree, trace: SummaryTrace) {
         if (mode == ReviewSummariesMode.EXPLORER) trace.best?.let { best ->
-            tree.nodes.firstOrNull { it.identity == best.identity }?.let { browse(tree.shownParent(it)?.identity, tree) }
+            tree.byIdentity(best.identity)?.let { browse(tree.shownParent(it)?.identity, tree) }
         }
         val path = tracePath(tree, trace)
         path?.let {

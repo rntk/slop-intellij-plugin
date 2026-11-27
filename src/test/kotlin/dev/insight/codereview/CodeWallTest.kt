@@ -1,5 +1,6 @@
 package dev.insight.codereview
 
+import dev.insight.review.FileSummaries
 import dev.insight.review.ReviewNote
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.wall.WallLine
@@ -31,10 +32,10 @@ class CodeWallTest {
         assertTrue(empty.lines.isEmpty())
 
         val files = listOf(file("a.kt", 2), file("b.kt", 1))
-        val wall = CodeWallContent(WallScope(null, "All"), files, mapOf("a.kt" to "Does a."), setOf("b.kt")).toWall()
+        val wall = CodeWallContent(WallScope(null, "All"), files, FileSummaries(mapOf("a.kt" to "Does a."), setOf("b.kt"))).toWall()
         assertEquals(listOf("a.kt", "b.kt"), wall.blocks.map { it.path })
-        assertEquals(mapOf("a.kt" to "Does a."), wall.summaries)
-        assertEquals(setOf("b.kt"), wall.summarizing)
+        assertEquals(mapOf("a.kt" to "Does a."), wall.summaries.texts)
+        assertEquals(setOf("b.kt"), wall.summaries.pending)
     }
 
     @Test fun `a file chat pins the file and its summary, cutting a long one at a line`() {

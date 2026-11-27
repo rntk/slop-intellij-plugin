@@ -1,5 +1,6 @@
 package dev.insight.review.wall
 
+import dev.insight.review.FileSummaries
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
@@ -330,7 +331,7 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
                 WallBlock(path, path, "", (1..300).map { WallLine.source(it, "line $it$suffix") }, 0)
             }
             wall.show(WallContent(WallScope(null, "All files"), blocks,
-                mapOf("a.kt" to (1..500).joinToString("\n") { "Summary line $it" })))
+                FileSummaries(mapOf("a.kt" to (1..500).joinToString("\n") { "Summary line $it" }))))
             val pane = JScrollPane(wall.card)
             pane.setSize(1400, 900)
             fun layout(component: Container) {
@@ -350,7 +351,7 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
             }
             val all = rows("a")
             val blocks = listOf(WallBlock("a.kt", "a.kt", "", all.take(50), all.size - 50, all.drop(50)), WallBlock("b.kt", "b.kt", "", rows("b"), 0))
-            wall.show(WallContent(WallScope(null, "All changes"), blocks, mapOf("a.kt" to "Adds a.")))
+            wall.show(WallContent(WallScope(null, "All changes"), blocks, FileSummaries(mapOf("a.kt" to "Adds a."))))
             val pane = JScrollPane(wall.card)
             pane.setSize(1400, 900)
             relayout(pane)
@@ -419,7 +420,7 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
         wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {}, summarize = { path ->
             asked += path
             // b.kt cannot be summarized now; a.kt starts and the host says so in its next content.
-            (path == "a.kt").also { if (it) wall.show(WallContent(scope, blocks, summarizing = setOf(path))) }
+            (path == "a.kt").also { if (it) wall.show(WallContent(scope, blocks, FileSummaries(pending = setOf(path)))) }
         })
         try {
             wall.show(WallContent(scope, blocks))
@@ -433,7 +434,7 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
             assertEquals(listOf("a.kt"), asked)
             assertTrue("The block shows that its summary is being written", a.showsSummary)
 
-            wall.show(WallContent(scope, blocks, mapOf("a.kt" to "Adds a.")))
+            wall.show(WallContent(scope, blocks, FileSummaries(mapOf("a.kt" to "Adds a."))))
             assertTrue("The written summary takes its place", wall.blocks.first().showsSummary)
 
             repeat(3) { if (!b.active) press(surface, "TAB") }
@@ -593,7 +594,7 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
         val summaries = blocks.associate { it.path to "Summary paragraph for ${it.path} with enough detail to wrap." }
         val wall = WallView(DIFFS_WALL_LABELS, { _, _ -> }, {})
         try {
-            wall.show(WallContent(WallScope(null, "Many summaries"), blocks, summaries))
+            wall.show(WallContent(WallScope(null, "Many summaries"), blocks, FileSummaries(summaries)))
             val pane = JScrollPane(wall.card)
             pane.setSize(1400, 900)
             relayout(pane)
@@ -654,7 +655,7 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
                     assertEquals(SummaryKind.FILE, kind)
                     available = false
                     requested += path
-                    wall.show(CodeWallContent(scope, files, emptyMap(), setOf(path)))
+                    wall.show(CodeWallContent(scope, files, FileSummaries(pending = setOf(path))))
                     true
                 },
             ),
@@ -678,7 +679,7 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
             assertTrue(wall.view.blocks.first().showsSummary)
             assertTrue(toggle.isEnabled)
 
-            wall.show(CodeWallContent(scope, files, mapOf("src/A.kt" to "Returns 1.")))
+            wall.show(CodeWallContent(scope, files, FileSummaries(mapOf("src/A.kt" to "Returns 1."))))
             assertTrue(wall.view.blocks.first().showsSummary)
             press(surface, "S")
             press(surface, "S")

@@ -13,6 +13,7 @@ import dev.insight.context.ContextSummaryActions
 import dev.insight.context.capturedSourcePick
 import dev.insight.context.reviewDiffPick
 import dev.insight.context.showContextPicker
+import dev.insight.review.SummaryKind
 import dev.insight.review.ReportLink
 import dev.insight.review.ReportProjectIndex
 import dev.insight.review.ReviewSummaryTree
@@ -69,8 +70,7 @@ internal class DiffsWallView(
     private val openOnCanvas: ((path: String, line: Int?) -> Unit)? = null,
     private val openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
     private val reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
-    /** Asks for the summary of a file that has none; see [WallView]. Null leaves only files with a summary their Summary switch. */
-    summarize: ((path: String) -> Boolean)? = null,
+    /** Asks for summaries of files that have none; see [WallView]. Null leaves only files with a summary their Summary switch. */
     private val summaryActions: ContextSummaryActions? = null,
     /** Coroutine scope for background link rendering in summaries and chats. */
     scope: CoroutineScope? = null,
@@ -205,13 +205,15 @@ internal class DiffsWallView(
         highlighter = diffsWallHighlighter(project, ::diffFileFor, addedSources::get),
         openOnCanvas = openOnCanvas?.let { open -> { path -> open(path, null) } },
         onContext = project?.let { p -> { block, line, point -> showContext(p, block, line, point) } },
-        summarize = summarize,
+        summarize = summaryActions?.let { actions -> { path -> actions.generate(path, SummaryKind.FILE) } },
         cardWidthScale = 1.2,
         links = WallLinkSupport(
             project = project,
             coroutineScope = scope,
             linkHost = linkHost,
-            canSummarize = { it !in addedSources },
+            canSummarize = summaryActions?.let { actions ->
+                { path -> path !in addedSources && actions.available(path, SummaryKind.FILE) }
+            },
             onRemoveBlock = ::removeAdded,
         ),
         loadChunk = loadChunk,
@@ -299,7 +301,6 @@ internal class DiffsWallView(
             scope = content.scope,
             blocks = emptyList(),
             summaries = content.summaries,
-            summarizing = content.summarizing,
             allPaths = allPaths,
             blockFor = ::blockForPath,
         )

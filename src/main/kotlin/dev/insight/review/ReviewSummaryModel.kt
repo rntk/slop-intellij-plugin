@@ -49,21 +49,34 @@ class ReviewSummaryTree(val nodes: List<SummaryNode>) {
     operator fun get(id: Int): SummaryNode = nodes[id]
     fun depth(id: Int): Int = generateSequence(nodes[id].parent) { nodes[it].parent }.count()
     /** Nodes that need a summary; an empty diff has none, not even the root. */
-    val summarizable: List<SummaryNode> get() = if (root.files.isEmpty()) emptyList() else nodes
+    val summarizable: List<SummaryNode> get() = if (nodes.isEmpty() || root.files.isEmpty()) emptyList() else nodes
 
-    private val scopeNodes by lazy {
+    private val scopeNodesByPath by lazy {
         summarizable.filter { !it.isTopicBranch && (it.kind == SummaryKind.ROOT || it.kind == SummaryKind.DIRECTORY || it.kind == SummaryKind.FILE) }
             .associateBy { it.path to it.kind }
     }
 
+    /** File, directory and root nodes addressable by a review path, in tree order. */
+    internal val scopeNodes: Collection<SummaryNode> get() = scopeNodesByPath.values
+
     /** Non-topic file nodes in tree order. */
     internal val fileNodes: List<SummaryNode> by lazy {
-        summarizable.filter { !it.isTopicBranch && it.kind == SummaryKind.FILE }
+        scopeNodes.filter { it.kind == SummaryKind.FILE }
     }
+
+    /** The reviewed files, one per path, in tree order. */
+    internal val files: List<ReviewSource> by lazy { fileNodes.mapNotNull { it.file } }
+
+    private val nodesByIdentity: Map<String, SummaryNode> by lazy {
+        HashMap<String, SummaryNode>(nodes.size).also { map -> nodes.forEach { map.putIfAbsent(it.identity, it) } }
+    }
+
+    /** The first node with [identity]: how a view finds its entry again in another version of the tree. */
+    internal fun byIdentity(identity: String?): SummaryNode? = identity?.let(nodesByIdentity::get)
 
     /** The ordinary review summary node for the exact file or directory selected by a view. */
     internal fun scopeNode(path: String, kind: SummaryKind): SummaryNode? =
-        scopeNodes[path to normalizeSummaryKind(path, kind)]
+        scopeNodesByPath[path to normalizeSummaryKind(path, kind)]
 
     /** Resolves a path to its file node, or else its directory/root node. */
     internal fun scopeNode(path: String): SummaryNode? =
@@ -263,10 +276,8 @@ class ReviewSummaries private constructor(
         if (tree.nodes.isEmpty()) return@lazy emptyMap()
         val r = reading
         buildMap {
-            for (node in tree.nodes) {
-                if ((node.kind == SummaryKind.FILE || node.kind == SummaryKind.DIRECTORY || node.kind == SummaryKind.ROOT) && !node.isTopicBranch) {
-                    r.text(node.id)?.let { put(node.path, it) }
-                }
+            for (node in tree.scopeNodes) {
+                r.text(node.id)?.let { put(node.path, it) }
             }
             val prefix = tree.rootDirectoryPrefix
             if (prefix.isNotEmpty() && prefix !in this) {
@@ -291,7 +302,7 @@ class ReviewSummaries private constructor(
 
     /** Lets the root row read the folder it represents after that folder is filled on its own. */
     internal fun withAbsorbedFolderSummary(): ReviewSummaries {
-        if (readingAliases.isNotEmpty() || tree.root.id in texts || tree.rootDirectoryPrefix.isEmpty()) return this
+        if (tree.nodes.isEmpty() || readingAliases.isNotEmpty() || tree.root.id in texts || tree.rootDirectoryPrefix.isEmpty()) return this
         val folder = generateSequence(tree.root) { node ->
             node.children.singleOrNull()?.takeIf(tree::isAbsorbed)?.let(tree::get)
         }.firstOrNull { it.id in texts } ?: return this

@@ -38,6 +38,7 @@ import dev.insight.links.SymbolCandidateFile
 import dev.insight.links.SymbolHints
 import dev.insight.links.SymbolLinkNavigator
 import dev.insight.links.SymbolMention
+import dev.insight.review.FileSummaries
 import dev.insight.review.ReportLink
 import dev.insight.review.ui.ContextualLinkedTextNavigator
 import dev.insight.review.ui.LinkedTextNavigator
@@ -119,7 +120,7 @@ internal class WallView(
     private val onContext: ((block: WallBlock, line: WallLine?, point: RelativePoint) -> Unit)? = null,
     /**
      * Asks for the summary of the file at a path that has none, when its Summary switch is pressed; true when it is being written,
-     * and then arrives, or leaves [WallContent.summarizing], in a later [show]. Without it only files with a summary have the switch.
+     * and then arrives, or leaves [FileSummaries.pending] of [WallContent.summaries], in a later [show]. Without it only files with a summary have the switch.
      */
     private val summarize: ((path: String) -> Boolean)? = null,
     /** Multiplier for the shared card width at 100% zoom. */
@@ -222,9 +223,8 @@ internal class WallView(
     private var allPaths: List<String> = emptyList()
     private val loadedPaths = linkedSetOf<String>()
     private var shown: List<WallBlock> = emptyList()
-    private var summaries: Map<String, String> = emptyMap()
-    /** Files whose summary is being written; a block asking for one shows that until it arrives. */
-    private var summarizing: Set<String> = emptySet()
+    /** File summaries and the files whose summary is being written; a block asking for one shows that until it arrives. */
+    private var summaries = FileSummaries()
     /** Blocks showing their summary in place of their rows. */
     private val summarized = mutableSetOf<String>()
     /** Paths among [summarized] currently materialized as rich HTML summary panes. */
@@ -442,9 +442,8 @@ internal class WallView(
                 surface.repaint()
             }
             // Only summaries arrived or changed: blocks keep their size and place, and repaint with the new text.
-            if (content.summaries != summaries || content.summarizing != summarizing) {
+            if (content.summaries != summaries) {
                 summaries = content.summaries
-                summarizing = content.summarizing
                 forgetMissingSummaries()
                 reconcileActiveSummaries(syncAll = true)
                 if (mode == WallMode.SKIM) {
@@ -461,7 +460,6 @@ internal class WallView(
         scope = content.scope
         shown = nextShown
         summaries = content.summaries
-        summarizing = content.summarizing
         forgetMissingSummaries()
         val currentPaths = nextShown.map { it.path }.toSet()
         folded.retainAll(currentPaths)
@@ -1135,14 +1133,14 @@ internal class WallView(
 
     /** A block whose summary is gone, and is not being written, shows its rows again. */
     private fun forgetMissingSummaries() {
-        summarized.retainAll { it in summaries || it in summarizing }
+        summarized.retainAll(summaries::covers)
         summaryScrolls.keys.retainAll(summarized)
         summaryScrollOffsets.keys.retainAll(summarized)
     }
 
     /** Whether the file at [path] has a summary to show, or one the wall can ask for. */
     private fun hasSummary(path: String): Boolean =
-        path in summaries || path in summarizing || (summarize != null && (canSummarize?.invoke(path) ?: true))
+        summaries.covers(path) || (summarize != null && (canSummarize?.invoke(path) ?: true))
 
     /**
      * Shows [view]'s summary in place of its rows, or its rows again; the block keeps its size. A file without a summary asks
@@ -1154,7 +1152,7 @@ internal class WallView(
             summarized -= path
             summaryScrolls.remove(path)
             summaryScrollOffsets.remove(path)
-        } else if (path in summaries || path in summarizing || (canSummarize?.invoke(path) != false && summarize?.invoke(path) == true)) {
+        } else if (summaries.covers(path) || (canSummarize?.invoke(path) != false && summarize?.invoke(path) == true)) {
             summarized += path
             // The skim column shows the summary of a folded file above its rows, so it opens too.
             if (mode == WallMode.SKIM) folded -= path
@@ -2110,9 +2108,9 @@ internal class WallView(
         /** Where the Summary switch was last painted, or null when the file has no summary and none can be asked for. */
         internal var summaryToggle: Rectangle? = null
             private set
-        private val summary: String? get() = summaries[block.path]
+        private val summary: String? get() = summaries.text(block.path)
         /** Whether the file's summary is being written and has not arrived yet. */
-        private val writingSummary: Boolean get() = summary == null && block.path in summarizing
+        private val writingSummary: Boolean get() = summaries.isPending(block.path)
         /** Whether the summary, or the note that it is being written, is shown in place of the rows. */
         internal val showsSummary: Boolean get() = block.path in summarized && (summary != null || writingSummary)
         private val summaryTooltip: String get() = when {

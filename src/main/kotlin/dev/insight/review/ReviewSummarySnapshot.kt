@@ -16,8 +16,21 @@ internal data class ReviewSummarySnapshot(
     val reading: ReviewSummaries get() = summaries.reading
     val fileTexts: Map<String, String> get() = summaries.fileTexts
     val nodeTexts: Map<String, String> get() = summaries.nodeTexts
+    /** The per-file slice, for views that show files rather than the tree. */
+    val files: FileSummaries by lazy { FileSummaries(fileTexts, pendingFiles) }
 
     fun isPending(node: SummaryNode): Boolean = running || node.id in pendingIds
 
     fun fillTarget(node: SummaryNode): SummaryNode? = summaries.fillTarget(node)
+}
+
+/** File summary prose by path, and the paths whose summary is being written: what a view of files needs from the summaries. */
+internal data class FileSummaries(
+    val texts: Map<String, String> = emptyMap(),
+    val pending: Set<String> = emptySet(),
+) {
+    fun text(path: String): String? = texts[path]
+    fun isPending(path: String): Boolean = text(path) == null && path in pending
+    /** The file has a summary or one is on its way. */
+    fun covers(path: String): Boolean = path in texts || path in pending
 }

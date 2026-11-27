@@ -17,6 +17,7 @@ import dev.insight.diff.walk.WalkHunk
 import dev.insight.diff.walk.ui.WalkthroughActions
 import dev.insight.diff.walk.ui.WalkthroughContent
 import dev.insight.diff.walk.ui.WalkthroughPage
+import dev.insight.review.FileSummaries
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.ReviewNoteKey
 import dev.insight.review.ReviewSummaryTree
@@ -79,8 +80,6 @@ internal class DiffCanvasCards(
     openWallOnCanvas: ((path: String, line: Int?) -> Unit)? = null,
     openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
     reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
-    /** Asks for the summary of a wall file that has none; true when it is being written. */
-    summarizeWallFile: ((path: String) -> Boolean)? = null,
     private val diffSession: (() -> ReviewDiffSession)? = null,
     contextSummaryActions: ContextSummaryActions? = null,
 ) : CanvasExtension {
@@ -99,12 +98,11 @@ internal class DiffCanvasCards(
         openWallOnCanvas: ((path: String, line: Int?) -> Unit)?,
         openOnWall: ((List<ReviewFile>, String) -> Unit)?,
         reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)?,
-        summarizeWallFile: ((path: String) -> Boolean)?,
         diffSession: (() -> ReviewDiffSession)?,
         contextSummaryActions: ContextSummaryActions?,
         wallLinks: DiffWallLinks,
     ) : this(open, project, removeDiff, openDirectoryDiff, openMovesOnWall, metricActions, openWallDiff, showAllChanges,
-        wallChats, openWallOnCanvas, openOnWall, reviewDestinations, summarizeWallFile, diffSession,
+        wallChats, openWallOnCanvas, openOnWall, reviewDestinations, diffSession,
         contextSummaryActions) {
         this.wallLinks = wallLinks
     }
@@ -115,7 +113,7 @@ internal class DiffCanvasCards(
     // One view for the tab session, so block positions survive canvas rebuilds.
     private val wallView = lazy {
         DiffsWallView(openWallDiff, showAllChanges, wallChats, project, openWallOnCanvas, openOnWall, reviewDestinations,
-            summarizeWallFile, contextSummaryActions, wallLinks?.scope,
+            contextSummaryActions, wallLinks?.scope,
             { wallLinks?.allWallFiles?.invoke() ?: content.wall?.files.orEmpty() }, wallLinks?.summaryTree)
     }
     private val wall by wallView
@@ -224,10 +222,10 @@ internal class DiffCanvasCards(
     }
 
     /** Gives the wall the latest file summaries without rebuilding the canvas; blocks keep their place and size. */
-    fun updateWallSummaries(summaries: Map<String, String>, summarizing: Set<String>) {
+    fun updateWallSummaries(summaries: FileSummaries) {
         val current = content.wall ?: return
-        if (current.summaries == summaries && current.summarizing == summarizing) return
-        content = content.copy(wall = current.copy(summaries = summaries, summarizing = summarizing))
+        if (current.summaries == summaries) return
+        content = content.copy(wall = current.copy(summaries = summaries))
         wall.show(content.wall!!)
     }
 

@@ -99,13 +99,13 @@ class SummaryExplorerTest : BasePlatformTestCase() {
             folder.componentPopupMenu.components.filterIsInstance<JMenuItem>().single { it.text == "Summarize" }.doClick()
             assertEquals(listOf("src/a.kt" to SummaryKind.FILE, "src" to SummaryKind.DIRECTORY), requested)
 
-            canvas.updateSummaries(hierarchy.copy(pendingEntries = setOf(file.id)))
+            canvas.updateSummaries(hierarchy.copy(summarySnapshot = hierarchy.summarySnapshot.copy(pendingIds = setOf(file.id))))
             val filling = link("file:src/a.kt")
             assertEquals("Summarizing…", filling.text)
             assertFalse(filling.isEnabled)
             assertTrue(link("file:src/nested/b.kt").isEnabled)
 
-            canvas.updateSummaries(hierarchy.copy(summaries = original.summarize(mapOf(file.id to "Updates one file."))))
+            canvas.updateSummaries(SummariesCard(original.summarize(mapOf(file.id to "Updates one file.")), false, true, pages = hierarchy.pages))
             assertTrue(descendants(canvas).none { it.name == "summarize-entry:file:src/a.kt" })
 
         } finally { canvas.dispose() }

@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.FileSummaries
 import dev.insight.review.wall.WALL_MAX_LINES
 import dev.insight.review.wall.WALL_MAX_SKIM_LINES
 import dev.insight.review.wall.WallLine
@@ -71,10 +72,10 @@ class DiffsWallModelTest {
     @Test
     fun contentMakesOneBlockPerFileInOrder() {
         val files = listOf(file("b.kt", "@@ -1 +1 @@\n-a\n+b\n"), file("a.kt", ""))
-        val wall = DiffsWallContent(dev.insight.review.wall.WallScope(null, "All changes"), files, mapOf("a.kt" to "Sum"), setOf("b.kt")).toWall()
+        val wall = DiffsWallContent(dev.insight.review.wall.WallScope(null, "All changes"), files, FileSummaries(mapOf("a.kt" to "Sum"), setOf("b.kt"))).toWall()
         assertEquals(listOf("b.kt", "a.kt"), wall.blocks.map { it.path })
-        assertEquals(mapOf("a.kt" to "Sum"), wall.summaries)
-        assertEquals(setOf("b.kt"), wall.summarizing)
+        assertEquals(mapOf("a.kt" to "Sum"), wall.summaries.texts)
+        assertEquals(setOf("b.kt"), wall.summaries.pending)
     }
 
     @Test

@@ -21,8 +21,6 @@ internal class ChangeTopicHierarchyPanel(
 ) : HierarchyColumnsPanel(availableWidth, zoom, vocabulary) {
     val outline = state.outline(card)
     private val summaries = card.summaries
-    private val fileNodes = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associateBy { it.path }
-    private val fileSummaries = fileNodes.mapValues { summaries.text(it.value.id) }
     /** Topic summaries, else the summary of exactly a topic's files, by reading identity; see [topicReadingSummaries]. */
     private val reading = card.reading
     private val wordWeights = SummaryWordWeights(reading)
@@ -145,11 +143,12 @@ internal class ChangeTopicHierarchyPanel(
         val file = outline.files[index]
         rowsPlaced++
         val identity = "file:${file.path}"
-        val summary = fileSummaries[file.path] ?: readingIds[identity]?.let(reading::text)
+        val node = summaries.tree.scopeNode(file.path, SummaryKind.FILE)
+        val summary = summaries.fileTexts[file.path] ?: readingIds[identity]?.let(reading::text)
         val mark = marks[identity]
         val leaf = fileCard(file, file.path.substringAfterLast('/'), topLevel, column, active?.contains(index) == true,
-            { fileNodes[file.path]?.let(actions.openNode) ?: actions.openFile(file.path) },
-            actions.showNode?.let { show -> { fileNodes[file.path]?.let(show) ?: actions.showDiffCard(file.path) } }, mark, badge(identity),
+            { node?.let(actions.openNode) ?: actions.openFile(file.path) },
+            actions.showNode?.let { show -> { node?.let(show) ?: actions.showDiffCard(file.path) } }, mark, badge(identity),
             review = readingIds[identity]?.let { actions.review?.control(reading.tree[it], summaryFont()) })
         val note = note("summary:${file.path}", summary ?: "No summary yet", summary != null, column + 1, y, mark, weights(identity))
         readingIds[identity]?.let { actions.review?.decorate(note, reading.tree[it]) }

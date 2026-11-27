@@ -1,5 +1,6 @@
 package dev.insight.codereview
 
+import dev.insight.review.FileSummaries
 import dev.insight.review.wall.WALL_MAX_LINES
 import dev.insight.review.wall.WALL_MAX_SKIM_LINES
 import dev.insight.review.wall.WallBlock
@@ -9,16 +10,15 @@ import dev.insight.review.wall.wallSourceLines
 
 /**
  * What the Code wall shows: [scope] names it and keeps its layout; [files] are its current snapshot files, in order; [summaries]
- * holds the summary text of the files that have one, by path; [summarizing] lists the paths currently being written.
+ * holds its file summaries and the files whose summary is being written.
  */
 internal data class CodeWallContent(
     val scope: WallScope,
     val files: List<CodeFile>,
-    val summaries: Map<String, String> = emptyMap(),
-    val summarizing: Set<String> = emptySet(),
+    val summaries: FileSummaries = FileSummaries(),
 ) {
     /** The wall's content: one source block per file. */
-    fun toWall(): WallContent = WallContent(scope, files.map { codeWallBlock(it) }, summaries, summarizing)
+    fun toWall(): WallContent = WallContent(scope, files.map { codeWallBlock(it) }, summaries)
 }
 
 /**

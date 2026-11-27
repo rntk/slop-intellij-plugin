@@ -87,9 +87,7 @@ import kotlinx.coroutines.withContext
 
 /** The scope's folder and file tree and its available summaries. */
 internal data class ChartsCard(
-    val summaries: ReviewSummaries,
-    val canGenerateSummaries: Boolean = true,
-    val pendingEntries: Set<Int> = emptySet(),
+    val summarySnapshot: ReviewSummarySnapshot,
     /** The review state's revision; search results of another revision are discarded. */
     val revision: Int = 0,
     val topics: ReviewTopics? = null,
@@ -97,12 +95,10 @@ internal data class ChartsCard(
     val grouping: ReviewTopics? = null,
     val groupingSummaries: ReviewSummaries? = null,
 ) {
-    val tree get() = summaries.tree
-    val summarySnapshot: ReviewSummarySnapshot
-        get() = ReviewSummarySnapshot(summaries, running = false, canGenerate = canGenerateSummaries, pendingIds = pendingEntries)
+    val summaries get() = summarySnapshot.summaries
+    val tree get() = summarySnapshot.tree
     val connectionSources by lazy {
-        tree.nodes.asSequence().filter { it.kind == SummaryKind.FILE }.mapNotNull { it.file }
-            .associate { it.path to it.absolutePath }
+        tree.files.associate { it.path to it.absolutePath }
     }
 }
 
@@ -243,7 +239,7 @@ internal class ChartsCanvasCard(
         }
         val baseMetrics = if (diff) listOf(LineChartMetric.ADDED, LineChartMetric.REMOVED)
             else listOf(LineChartMetric.LINES, LineChartMetric.SIZE, LineChartMetric.ITEMS) + LineChartMetric.lenses(
-                content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path })
+                content.tree.files)
         val metrics = baseMetrics + listOfNotNull(LineChartMetric.FOUND.takeIf { search != null && view.searchResult?.files?.isNotEmpty() == true })
         val metric = view.lineMetric?.takeIf { it in metrics } ?: metrics.first()
         val chart by lazy { summaryRadar(content.tree, view.radarLevel, view.radarSymbols) }
@@ -313,13 +309,10 @@ internal class ChartsCanvasCard(
                 treeConnectionIndex = TreeFileConnectionIndex(project, sources, treeConnectionScope)
             }
         }
-        val fileSummaries = if (tree) content.summaries.fileTexts else emptyMap()
-        val nodeSummaries = if (tree) content.summaries.nodeTexts else emptyMap()
+        val fileSummaries = if (tree) content.summarySnapshot.fileTexts else emptyMap()
+        val nodeSummaries = if (tree) content.summarySnapshot.nodeTexts else emptyMap()
         val treeContextSources = if (tree) {
-            content.tree.nodes.asSequence()
-                .mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }
-                .distinctBy { it.path }
-                .toList()
+            content.tree.files
         } else emptyList()
         val treeScopeFiles = treeContextSources.map { it.path }
         val expandedSummaries = if (view.treeShowAllSummaries) fileSummaries.keys.toSet()
@@ -547,7 +540,7 @@ internal class ChartsCanvasCard(
             else -> bodyScroll
         }
         val searchRow = search?.takeIf { tabbed }?.let { actions ->
-            searchRow(actions, content.tree.nodes.mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }.distinctBy { it.path },
+            searchRow(actions, content.tree.files,
                 content.revision)
         }
         val header = if (tabbed) compactToolbar(chartOptions, searchRow, treeBoard) else JPanel(BorderLayout(scaled(8), 0)).apply {
@@ -716,23 +709,23 @@ internal class ChartsCanvasCard(
     /** Uses the ordinary review fill so other views receive the full summary, including its source references. */
     private suspend fun fileSummaryBrief(path: String): String? {
         val content = chartsContent.value ?: return null
-        content.summaries.fileTexts[path]?.let { return oneLineBrief(it) }
+        content.summarySnapshot.fileTexts[path]?.let { return oneLineBrief(it) }
         val node = content.tree.scopeNode(path, SummaryKind.FILE) ?: return null
-        val cancelFill = if (node.id in content.pendingEntries) null else {
+        val cancelFill = if (node.id in content.summarySnapshot.pendingIds) null else {
             val actions = summaryActions ?: return null
-            if (!content.canGenerateSummaries || !actions.available(path, SummaryKind.FILE)) return null
+            if (!content.summarySnapshot.canGenerate || !actions.available(path, SummaryKind.FILE)) return null
             actions.generateOwned(path, SummaryKind.FILE)
         }
         val updated = try {
             chartsContent.first {
-                it == null || it.revision != content.revision || node.id !in it.pendingEntries || path in it.summaries.fileTexts
+                it == null || it.revision != content.revision || node.id !in it.summarySnapshot.pendingIds || path in it.summarySnapshot.fileTexts
             }
         } catch (e: CancellationException) {
             cancelFill?.invoke()
             throw e
         }
         if (updated == null || updated.revision != content.revision) return null
-        return updated.summaries.fileTexts[path]?.let { oneLineBrief(it) }
+        return updated.summarySnapshot.fileTexts[path]?.let { oneLineBrief(it) }
     }
 
     /** The project-relative path the model's file tools understand for a review [path]. */
@@ -947,7 +940,8 @@ internal class ChartsCanvasCard(
         )
 
     private fun summaryPreview(node: SummaryNode, content: ChartsCard) = JPanel(BorderLayout()).apply {
-        val summary = content.summaries.text(node.id)
+        val reading = content.summarySnapshot.reading
+        val summary = reading.text(node.id)
         name = "charts-lines-summary:${node.path}"
         background = UIUtil.getListBackground()
         add(JPanel(BorderLayout(scaled(8), 0)).apply {
@@ -971,7 +965,7 @@ internal class ChartsCanvasCard(
                 }, BorderLayout.EAST)
             }
         }, BorderLayout.NORTH)
-        val weights = if (summary != null && view.linesTagsCloud) SummaryWordWeights(content.summaries)[node.id] else emptyMap()
+        val weights = if (summary != null && view.linesTagsCloud) SummaryWordWeights(reading)[node.id] else emptyMap()
         add(summaryBody(summary, "No summary available yet.", weights), BorderLayout.CENTER)
     }
 

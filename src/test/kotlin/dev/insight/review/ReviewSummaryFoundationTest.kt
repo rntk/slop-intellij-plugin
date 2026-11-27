@@ -2,6 +2,7 @@ package dev.insight.review
 
 import com.google.gson.JsonParser
 import dev.insight.context.ContextSummaryActions
+import dev.insight.review.ui.ChartsCard
 import dev.insight.review.ui.SummariesCard
 import dev.insight.review.ui.summaryEntryFill
 import kotlinx.coroutines.Job
@@ -61,6 +62,14 @@ class ReviewSummaryFoundationTest {
         assertNull(partial.fillTarget(one))
     }
 
+    @Test fun `absent saved tree has no addressable entries`() {
+        val summaries = ReviewSummaries(ReviewSummaryTree(emptyList()))
+        assertTrue(summaries.fileTexts.isEmpty())
+        assertTrue(summaries.reading === summaries)
+        assertTrue(summaries.nodeTexts.isEmpty())
+        assertNull(summaries.tree.scopeNode("missing.kt"))
+    }
+
     @Test fun `fillTarget ignores topic branches and empty trees`() {
         val topics = ReviewTopics(listOf(Source("a.kt"))).assign("a.kt", "Auth > Login")
         val topicTree = buildTopicSummaryTree(topics)
@@ -91,8 +100,12 @@ class ReviewSummaryFoundationTest {
         val readySnap = ReviewSummarySnapshot(ReviewSummaries(tree), running = false, canGenerate = false)
         assertFalse(summaryEntryFill(readySnap, a, actions)!!.enabled)
 
-        // SummariesCard keeps canGenerate = true so non-pending rows remain queueable when actions.available allows.
-        val card = SummariesCard(ReviewSummaries(tree), running = false, canRun = false, pendingEntries = setOf(b.id))
+        // A pending scoped fill blocks a whole-review run while both views can queue another file.
+        val snapshot = ReviewSummarySnapshot(ReviewSummaries(tree), pendingIds = setOf(b.id))
+        val card = SummariesCard(snapshot, canRun = false)
+        val charts = ChartsCard(snapshot)
+        assertTrue(summaryEntryFill(charts.summarySnapshot, b, actions)!!.pending)
+        assertTrue(summaryEntryFill(charts.summarySnapshot, a, actions)!!.enabled)
         val cardFillA = summaryEntryFill(card.summarySnapshot, a, actions)!!
         assertFalse(cardFillA.pending)
         assertEquals("Summarize", cardFillA.label)
@@ -177,5 +190,27 @@ class ReviewSummaryFoundationTest {
         assertEquals(2, sub["totals"].asJsonObject["nodes"].asInt)
         assertEquals(1, sub["totals"].asJsonObject["files"].asInt)
         assertEquals(2, sub["totals"].asJsonObject["summarized"].asInt)
+    }
+
+    @Test fun `tree lists reviewed files once and finds nodes by identity`() {
+        val tree = buildSummaryTree(listOf(Source("src/b/Two.kt"), Source("src/a/One.kt"), Source("src/a/One.kt")))
+        assertEquals(listOf("src/a/One.kt", "src/b/Two.kt"), tree.files.map { it.path })
+        val two = tree.scopeNode("src/b/Two.kt", SummaryKind.FILE)!!
+        assertEquals(two, tree.byIdentity(two.identity))
+        assertEquals(tree.root, tree.byIdentity("root"))
+        assertNull(tree.byIdentity("file:missing.kt"))
+        assertNull(tree.byIdentity(null))
+    }
+
+    @Test fun `snapshot file slice reports text and pending writes`() {
+        val tree = buildSummaryTree(listOf(Source("a.kt"), Source("b.kt")))
+        val a = tree.scopeNode("a.kt", SummaryKind.FILE)!!
+        val summaries = ReviewSummaries(tree).summarize(mapOf(a.id to Summary.plain("Does a.")))
+        val files = ReviewSummarySnapshot(summaries, pendingFiles = setOf("a.kt", "b.kt")).files
+        assertEquals("Does a.", files.text("a.kt"))
+        assertFalse(files.isPending("a.kt"))
+        assertTrue(files.isPending("b.kt"))
+        assertTrue(files.covers("b.kt"))
+        assertFalse(FileSummaries().covers("b.kt"))
     }
 }

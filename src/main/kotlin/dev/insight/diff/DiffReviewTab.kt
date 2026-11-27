@@ -64,6 +64,7 @@ import dev.insight.review.ui.ChartSearchActions
 import dev.insight.review.ChartPathSearch
 import dev.insight.review.TreeConnectionExplainer
 import dev.insight.review.TreeBriefer
+import dev.insight.review.ReviewSummarySnapshot
 import dev.insight.review.ui.ReviewContextSummaryLauncher
 import dev.insight.review.ui.ReviewTab
 import dev.insight.review.ui.ReviewTileStat
@@ -156,18 +157,20 @@ internal class DiffReviewTab(
         openWallOnCanvas = openOnCanvas,
         openOnWall = ::openDiffsWall,
         reviewDestinations = ::reviewDestinations,
-        summarizeWallFile = { path -> fillSummary(path, SummaryKind.FILE) },
         diffSession = ::diffSession,
         contextSummaryActions = contextSummaryActions,
         wallLinks = DiffWallLinks(scope, { state.snapshot.files }, { state.summaries.tree }),
     )
+    private fun createSummarizer(complete: CompletionFn, context: DiffReviewContext) =
+        diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, maxContextChars = configuredContextChars())
+
     /** Writes summaries with the same evidence and prompts as /summaries, for the entries a run asks for. */
     protected override val summaryLauncher = ReviewContextSummaryLauncher(project, scope) {
         val context = captureContext()
         val files = state.snapshot.files
         val rawComplete = this@DiffReviewTab.complete ?: withContext(Dispatchers.IO) { ChatSettings.getInstance().createClient()::complete }
         val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
-        diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, maxContextChars = configuredContextChars())
+        createSummarizer(complete, context)
     }
     private val fullFileSnapshots = java.util.IdentityHashMap<ReviewFile, com.intellij.openapi.vfs.VirtualFile>()
     override val canvas: NoteCanvas = NoteCanvas(
@@ -364,7 +367,7 @@ internal class DiffReviewTab(
                 val groupingSummaries = command == ReviewCommand.GROUPING_SUMMARIES
                 // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                 val run = withCountProgress("Summarizing the change…", "summaries") { onProgress ->
-                    diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, maxContextChars = configuredContextChars())
+                    createSummarizer(complete, context)
                         .run(when {
                             topicSummaries -> context.startTopicSummaries()
                             groupingSummaries -> context.startGroupingSummaries()
@@ -733,19 +736,20 @@ internal class DiffReviewTab(
             (paths?.sorted()?.joinToString("\n") ?: "Follows all files in the selected diff.")
     }
 
-    override fun summariesChanged() {
-        super.summariesChanged()
-        diffCards.updateWallSummaries(state.summaries.fileTexts, scopedSummaryFill.pendingFiles)
+    override fun summariesChanged(snapshot: ReviewSummarySnapshot) {
+        super.summariesChanged(snapshot)
+        diffCards.updateWallSummaries(snapshot.files)
     }
 
     override fun renderCanvas() {
+        val snapshot = summarySnapshot()
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files,
             semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
-            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, state.summaries.fileTexts, scopedSummaryFill.pendingFiles) },
+            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, snapshot.files) },
             walkthrough = walkthroughContent())
-        canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard(),
-            charts = chartsCard(), reportViewer = reportViewerCard()))
+        canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(snapshot), topicsCard(), explanation = explanations.result, grouping = groupingCard(),
+            charts = chartsCard(snapshot), reportViewer = reportViewerCard()))
         countSemantic()
         canvas.highlight(selectedPaths().toSet())
         scheduleTileRefresh()

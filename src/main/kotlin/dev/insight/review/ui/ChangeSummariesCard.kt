@@ -7,7 +7,6 @@ import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummarySnapshot
 import dev.insight.review.ReviewSummaryTree
-import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
@@ -19,15 +18,13 @@ import javax.swing.text.JTextComponent
 
 /** What the canvas shows for a tab's summaries: the tree so far and whether a /summaries turn can run. */
 internal data class SummariesCard(
-    val summaries: ReviewSummaries,
-    val running: Boolean,
+    val summarySnapshot: ReviewSummarySnapshot,
     val canRun: Boolean,
-    val pendingEntries: Set<Int> = emptySet(),
     val pages: Set<CanvasTabKey.SummaryPage> = setOf(CanvasTabKey.Summaries),
 ) {
-    val reading: ReviewSummaries get() = summaries.reading
-    val summarySnapshot: ReviewSummarySnapshot
-        get() = ReviewSummarySnapshot(summaries, running, canGenerate = true, pendingIds = pendingEntries)
+    val summaries get() = summarySnapshot.summaries
+    val reading get() = summarySnapshot.reading
+    val running get() = summarySnapshot.running
 }
 
 /** An action scoped to the original summaries of one review entry. */
@@ -64,7 +61,7 @@ internal fun summariesStatus(card: SummariesCard, noFiles: String = ReviewVocabu
     val fileCount = "$files file${if (files == 1) "" else "s"}"
     return when {
         total == 0 -> noFiles
-        (card.running || card.pendingEntries.isNotEmpty()) && !summaries.complete -> "Summarizing… $count of $total summaries · $fileCount"
+        (card.running || card.summarySnapshot.pendingIds.isNotEmpty()) && !summaries.complete -> "Summarizing… $count of $total summaries · $fileCount"
         summaries.complete -> "$total summaries · $fileCount"
         else -> "$count of $total summarized · $fileCount"
     }
@@ -117,7 +114,6 @@ internal class ChangeSummaryActions(
 ) {
     private val linkScope by lazy { contextSources.map { it.path } }
     private val linkDiff by lazy { contextSources.any { it is PatchSource } }
-    private val linkFileNodes by lazy { summaryTree?.nodes?.filter { it.kind == SummaryKind.FILE }?.associateBy { it.path }.orEmpty() }
 
     /**
      * Links the file paths, line references and code symbols of [node]'s summary [text] shown in [area], as the report viewer
@@ -134,7 +130,7 @@ internal class ChangeSummaryActions(
                 contextSummaryActions, wall, openOnCanvas, absolutePath)
         }
         installSummaryTextLinks(area, text, project, SummaryTextLinkContext(navigator, reviewDestinations, contextSources, wall) { path, _ ->
-            val target = matchingReviewSource(contextSources, path, null)?.let { linkFileNodes[it.path] }
+            val target = matchingReviewSource(contextSources, path, null)?.let { summaryTree?.scopeNode(it.path, SummaryKind.FILE) }
             if (!diff || target == null) emptyList() else listOf(JMenuItem("Open diff").apply {
                 name = "summary-link-action:OpenDiff"
                 toolTipText = "Open the diff of ${target.path} in this review"

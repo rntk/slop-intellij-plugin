@@ -26,7 +26,7 @@ class ChunkedSummaryTreeTest {
     private fun parts(count: Int, hash: (Int) -> String = { "h$it" }) =
         List(count) { SourceChunk(it, (it * 10 + 1)..(it * 10 + 10), hash(it)) }
 
-    private fun ReviewSummaryTree.byIdentity(identity: String) = nodes.single { it.identity == identity }
+    private fun ReviewSummaryTree.singleByIdentity(identity: String) = nodes.single { it.identity == identity }
     private fun ReviewSummaryTree.labels(node: SummaryNode) = node.children.map { get(it).label }
 
     private fun assertPreOrder(tree: ReviewSummaryTree) {
@@ -53,7 +53,7 @@ class ChunkedSummaryTreeTest {
             assertEquals(reviewFingerprint("file", node.path, node.file!!.fingerprint), node.key)
             assertTrue(node.children.isEmpty())
         }
-        val folder = tree.byIdentity("directory:b/c/d")
+        val folder = tree.singleByIdentity("directory:b/c/d")
         assertEquals(reviewFingerprint("directory", "b/c/d", "d", *folder.children.map { tree[it].key }.toTypedArray()), folder.key)
         assertEquals(reviewFingerprint("root", "", "All changes", *tree.root.children.map { tree[it].key }.toTypedArray()), tree.root.key)
         assertEquals(tree.nodes.map { it.key }, buildSummaryTree(files, chunks = { emptyList() }).nodes.map { it.key })
@@ -73,7 +73,7 @@ class ChunkedSummaryTreeTest {
         val big = Source("src/big.kt")
         val tree = buildSummaryTree(listOf(big, Source("src/small.kt")), chunks = { if (it == big) parts(3) else emptyList() })
         assertPreOrder(tree)
-        val file = tree.byIdentity("file:src/big.kt")
+        val file = tree.singleByIdentity("file:src/big.kt")
         assertEquals(SummaryKind.FILE, file.kind)
         assertEquals(listOf("Lines 1–10", "Lines 11–20", "Lines 21–30"), tree.labels(file))
         val second = tree[file.children[1]]
@@ -87,14 +87,14 @@ class ChunkedSummaryTreeTest {
         assertEquals(reviewFingerprint("chunk", "src/big.kt", "h1", "11", "20"), second.key)
         assertEquals(listOf("src/big.kt"), file.files)
         assertEquals(reviewFingerprint("file", "src/big.kt", "1", *file.children.map { tree[it].key }.toTypedArray()), file.key)
-        assertTrue(tree.byIdentity("file:src/small.kt").children.isEmpty())
+        assertTrue(tree.singleByIdentity("file:src/small.kt").children.isEmpty())
         assertEquals(listOf("src/big.kt", "src/small.kt"), tree.root.files)
     }
 
     @Test fun `more than eight parts form groups with the union of their lines`() {
         val tree = buildSummaryTree(listOf(Source("big.kt")), chunks = { parts(20) })
         assertPreOrder(tree)
-        val file = tree.byIdentity("file:big.kt")
+        val file = tree.singleByIdentity("file:big.kt")
         val groups = file.children.map(tree::get)
         assertEquals(listOf(7, 7, 6), groups.map { it.children.size })
         assertTrue(groups.all { it.kind == SummaryKind.CHUNK })
@@ -131,25 +131,25 @@ class ChunkedSummaryTreeTest {
         val kept = summaries.retainedIn(next)
         val dropped = next.nodes.filter { kept.text(it.id) == null }.map { it.identity }
         assertEquals(listOf("root", "directory:src", "file:src/big.kt", "chunk-group:src/big.kt:7:13", "chunk:src/big.kt:10"), dropped)
-        assertEquals("About chunk-group:src/big.kt:0:6.", kept.text(next.byIdentity("chunk-group:src/big.kt:0:6").id))
-        assertEquals("About chunk:src/big.kt:11.", kept.text(next.byIdentity("chunk:src/big.kt:11").id))
-        assertEquals("About file:src/a.kt.", kept.text(next.byIdentity("file:src/a.kt").id))
+        assertEquals("About chunk-group:src/big.kt:0:6.", kept.text(next.singleByIdentity("chunk-group:src/big.kt:0:6").id))
+        assertEquals("About chunk:src/big.kt:11.", kept.text(next.singleByIdentity("chunk:src/big.kt:11").id))
+        assertEquals("About file:src/a.kt.", kept.text(next.singleByIdentity("file:src/a.kt").id))
     }
 
     @Test fun `ready lists parts and files first, then groups, the file and its folders`() {
         val tree = scope()
         var summaries = ReviewSummaries(tree)
         val chunkLeaves = tree.nodes.filter { it.kind == SummaryKind.CHUNK && it.children.isEmpty() }.map { it.id }
-        val a = tree.byIdentity("file:src/a.kt").id
-        val x = tree.byIdentity("file:lib/x.kt").id
+        val a = tree.singleByIdentity("file:src/a.kt").id
+        val x = tree.singleByIdentity("file:lib/x.kt").id
         assertEquals(chunkLeaves + x + a, summaries.ready())
         summaries = summaries.summarize(summaries.ready().associateWith { Summary.plain("Leaf.") })
-        val groups = tree.byIdentity("file:src/big.kt").children
+        val groups = tree.singleByIdentity("file:src/big.kt").children
         assertEquals(groups, summaries.ready())
         summaries = summaries.summarize(groups.associateWith { Summary.plain("Group.") })
-        assertEquals(listOf(tree.byIdentity("file:src/big.kt").id), summaries.ready())
+        assertEquals(listOf(tree.singleByIdentity("file:src/big.kt").id), summaries.ready())
         summaries = summaries.summarize(summaries.ready().associateWith { Summary.plain("File.") })
-        assertEquals(listOf(tree.byIdentity("directory:src").id), summaries.ready())
+        assertEquals(listOf(tree.singleByIdentity("directory:src").id), summaries.ready())
         summaries = summaries.summarize(summaries.ready().associateWith { Summary.plain("Folder.") })
         assertEquals(listOf(tree.root.id), summaries.ready())
     }
@@ -157,7 +157,7 @@ class ChunkedSummaryTreeTest {
     @Test fun `a file is summarized only after its parts`() {
         val tree = scope()
         val summaries = ReviewSummaries(tree)
-        val big = tree.byIdentity("file:src/big.kt")
+        val big = tree.singleByIdentity("file:src/big.kt")
         rejected { summaries.summarize(mapOf(big.id to "The whole file.")) }
         val group = tree[big.children[0]]
         rejected { summaries.summarize(mapOf(group.id to "Lines 1–70.")) }
@@ -173,7 +173,7 @@ class ChunkedSummaryTreeTest {
         val topics = ReviewTopics(listOf(big, Source("src/a.kt")), mapOf("src/big.kt" to "Core > Engine", "src/a.kt" to "Core > Engine"))
         val tree = buildTopicSummaryTree(topics) { if (it == big) parts(10) else emptyList() }
         assertPreOrder(tree)
-        val file = tree.byIdentity("file:src/big.kt")
+        val file = tree.singleByIdentity("file:src/big.kt")
         assertEquals(2, file.children.size)
         assertEquals(listOf("chunk-group:src/big.kt:0:4", "chunk-group:src/big.kt:5:9"), file.children.map { tree[it].identity })
         assertEquals(10, tree.nodes.count { it.kind == SummaryKind.CHUNK && it.children.isEmpty() })

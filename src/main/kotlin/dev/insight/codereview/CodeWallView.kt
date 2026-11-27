@@ -278,7 +278,6 @@ internal class CodeWallView(
             scope = content.scope,
             blocks = emptyList(),
             summaries = content.summaries,
-            summarizing = content.summarizing,
             allPaths = allPaths,
             blockFor = ::blockForPath,
         )

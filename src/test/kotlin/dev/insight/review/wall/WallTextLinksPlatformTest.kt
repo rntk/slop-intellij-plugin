@@ -1,5 +1,6 @@
 package dev.insight.review.wall
 
+import dev.insight.review.FileSummaries
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -462,7 +463,7 @@ class WallTextLinksPlatformTest : BasePlatformTestCase() {
             loadChunk = 2,
         )
         try {
-            wall.show(DiffsWallContent(WallScope(null, "All changes"), files, mapOf("src/F0.kt" to "Calls `src/F4.kt:L2`.")))
+            wall.show(DiffsWallContent(WallScope(null, "All changes"), files, FileSummaries(mapOf("src/F0.kt" to "Calls `src/F4.kt:L2`."))))
             val pane = JScrollPane(wall.card)
             pane.setSize(1400, 900)
             layoutTree(pane)
@@ -652,7 +653,7 @@ class WallTextLinksPlatformTest : BasePlatformTestCase() {
             allFiles = { listOf(diffA) },
         )
         try {
-            wall.show(DiffsWallContent(WallScope(null, "All changes"), listOf(diffA), mapOf("src/A.kt" to "Calls `tightFn()`.")))
+            wall.show(DiffsWallContent(WallScope(null, "All changes"), listOf(diffA), FileSummaries(mapOf("src/A.kt" to "Calls `tightFn()`."))))
             val scrollPane = JScrollPane(wall.card)
             scrollPane.setSize(500, 400)
             layoutTree(scrollPane)
@@ -739,7 +740,7 @@ class WallTextLinksPlatformTest : BasePlatformTestCase() {
             wall.show(WallContent(
                 WallScope(null, "All"),
                 listOf(WallBlock("src/A.kt", "src/A.kt", "", listOf(WallLine.source(1, "fun a() = hugeFn(1)")), 0)),
-                mapOf("src/A.kt" to "Calls `hugeFn()`."),
+                FileSummaries(mapOf("src/A.kt" to "Calls `hugeFn()`.")),
             ))
             val scrollPane = JScrollPane(wall.card)
             scrollPane.setSize(1200, 800)

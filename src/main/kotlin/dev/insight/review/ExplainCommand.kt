@@ -43,14 +43,14 @@ internal fun explainCommand(location: String, instructions: String): String =
     ("/explain $location" + if (instructions.isBlank()) "" else "\n" + instructions.trim()).trim()
 
 /** The summary of [node] in [summaries], found by identity: the card may show another version of the tree. */
-internal fun ReviewSummaries.textOf(node: SummaryNode): String? = tree.nodes.firstOrNull { it.identity == node.identity }?.let { text(it.id) }
+internal fun ReviewSummaries.textOf(node: SummaryNode): String? = tree.byIdentity(node.identity)?.let { text(it.id) }
 
 /**
  * The summaries from the root down to [node], found by identity, so the model sees the purpose of the whole before the part.
  * Levels without a summary are left out, and so is a level that repeats the one below (a single child's summary reused).
  */
 internal fun ReviewSummaries.chainTo(node: SummaryNode): List<SummaryLevel> {
-    val entry = tree.nodes.firstOrNull { it.identity == node.identity } ?: return emptyList()
+    val entry = tree.byIdentity(node.identity) ?: return emptyList()
     val levels = generateSequence(entry) { it.parent?.let(tree::get) }.toList().asReversed()
         .mapNotNull { level -> text(level.id)?.let { SummaryLevel(levelLabel(level), it) } }
     return levels.filterIndexed { i, level -> i == levels.lastIndex || level.text != levels[i + 1].text }
@@ -81,7 +81,7 @@ internal fun typedExplainTarget(text: String, summaries: ReviewSummaries, paths:
     if (files.isEmpty()) return ExplainTarget("the whole scope", paths, context = summaries.rootChain(),
         instructions = if (root) rest.drop(token.length).trim() else rest)
     val lines = range?.let { it.groupValues[2].toInt()..it.groupValues[3].toInt() }?.takeIf { !it.isEmpty() && files.size == 1 }
-    val node = summaries.tree.nodes.firstOrNull { it.path == path && it.kind in setOf(SummaryKind.FILE, SummaryKind.DIRECTORY, SummaryKind.ROOT) }
+    val node = summaries.tree.scopeNode(path)
     return ExplainTarget(token, files, lines, node?.let { summaries.chainTo(it) } ?: summaries.rootChain(),
         instructions = rest.drop(token.length).trim())
 }

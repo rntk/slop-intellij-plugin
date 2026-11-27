@@ -406,7 +406,7 @@ class LineChartViewTest : BasePlatformTestCase() {
                 assertTrue(toggle("charts-lines-summary-toggle:src").isSelected)
                 generate()!!.doClick()
                 assertEquals(listOf("src" to SummaryKind.DIRECTORY), requested)
-                canvas.updateCharts(empty.copy(pendingEntries = setOf(directory.id)))
+                canvas.updateCharts(ChartsCard(empty.summaries, pendingEntries = setOf(directory.id)))
                 assertEquals("Summarizing…", generate()?.text)
                 assertFalse(generate()!!.isEnabled)
 

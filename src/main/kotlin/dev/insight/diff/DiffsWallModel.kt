@@ -1,5 +1,6 @@
 package dev.insight.diff
 
+import dev.insight.review.FileSummaries
 import dev.insight.review.wall.MAX_ADDED_BLOCK_LINES
 import dev.insight.review.wall.WALL_MAX_LINES
 import dev.insight.review.wall.WALL_MAX_SKIM_LINES
@@ -9,15 +10,14 @@ import dev.insight.review.wall.WallLine
 import dev.insight.review.wall.WallScope
 
 /**
- * The wall's scope, ordered snapshot files, optional summaries keyed by path, and the paths whose summary is being written.
+ * The wall's scope, ordered snapshot files, and its file summaries.
  */
 internal data class DiffsWallContent(
     val scope: WallScope,
     val files: List<ReviewFile>,
-    val summaries: Map<String, String> = emptyMap(),
-    val summarizing: Set<String> = emptySet(),
+    val summaries: FileSummaries = FileSummaries(),
 ) {
-    fun toWall(): WallContent = WallContent(scope, files.map { wallBlock(it) }, summaries, summarizing)
+    fun toWall(): WallContent = WallContent(scope, files.map { wallBlock(it) }, summaries)
 }
 
 private val HUNK = Regex("""^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@""")

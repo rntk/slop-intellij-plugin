@@ -49,17 +49,19 @@ internal class ScopedSummaryFill(
     /** Missing non-topic root, directory, and file node IDs currently pending or queued in [current]. */
     fun pendingIds(current: ReviewSummaries = summaries()): Set<Int> {
         if (!busy) return emptySet()
-        return current.tree.nodes.asSequence()
-            .filter { !it.isTopicBranch && (it.kind == SummaryKind.ROOT || it.kind == SummaryKind.DIRECTORY || it.kind == SummaryKind.FILE) }
-            .filter { current.text(it.id) == null && pending(it.path, it.kind) }
+        return current.tree.scopeNodes.asSequence()
+            .filter { current.text(it.id) == null && isRequested(Target(it.path, it.kind)) }
             .mapTo(hashSetOf()) { it.id }
     }
 
     fun pending(path: String, kind: SummaryKind): Boolean {
         val target = target(path, kind)
-        return (running.any { it.target.includes(target) } || queued.any { it.target.includes(target) }) &&
+        return isRequested(target) &&
             summaries().tree.scopeNode(target.path, target.kind) != null
     }
+
+    private fun isRequested(target: Target): Boolean =
+        running.any { it.target.includes(target) } || queued.any { it.target.includes(target) }
 
     fun canFill(path: String, kind: SummaryKind): Boolean = canRun() && !pending(path, kind) && missing(summaries(), target(path, kind)) != null
 

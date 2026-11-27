@@ -71,6 +71,7 @@ import dev.insight.review.ui.FileStructure
 import dev.insight.review.ui.FileViewCard
 import dev.insight.review.ui.NOTES_CHANGED
 import dev.insight.review.ui.NoteCanvas
+import dev.insight.review.ReviewSummarySnapshot
 import dev.insight.review.ui.ReviewContextSummaryLauncher
 import dev.insight.review.ui.ReviewTab
 import dev.insight.review.ui.ReviewTileStat
@@ -170,13 +171,16 @@ internal class CodeReviewTab(
         scopeFiles = { state.snapshot.files.map { it.path } }, openFile = { path, line -> openFile(path, line) },
         changed = { knowledgeChanged() })
 
+    private fun createSummarizer(complete: CompletionFn, evidence: CodeSummaryEvidence) =
+        ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, evidence, maxContextChars = configuredContextChars())
+
     /** Uses the same source evidence and prompts as the review's /summaries command. */
     protected override val summaryLauncher = ReviewContextSummaryLauncher(project, scope) {
         val snapshot = state.snapshot
         val rawComplete = this.complete ?: withContext(Dispatchers.IO) { ChatSettings.getInstance().createClient()::complete }
         val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },
             rawComplete)
-        ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot), maxContextChars = configuredContextChars())
+        createSummarizer(complete, CodeSummaryEvidence(snapshot))
     }
 
     override val canvas: NoteCanvas = NoteCanvas(
@@ -337,7 +341,7 @@ internal class CodeReviewTab(
                 // Code walks the tree and batches the requests; the model only writes text, without a chat history or tool loop.
                 val run = pipeline {
                     withCountProgress("Summarizing the code…", "summaries") { onProgress ->
-                        ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, evidence, maxContextChars = configuredContextChars())
+                        createSummarizer(complete, evidence)
                             .run(if (topicSummaries) context.startTopicSummaries() else context.startSummaries(), summariesFocus(question),
                                 if (topicSummaries) context::summarizeTopics else context::summarize, onToolCall, onProgress)
                     }
@@ -583,10 +587,10 @@ internal class CodeReviewTab(
         return true
     }
 
-    override fun summariesChanged() {
-        super.summariesChanged()
+    override fun summariesChanged(snapshot: ReviewSummarySnapshot) {
+        super.summariesChanged(snapshot)
         canvas.updateFileView(fileViewCard())
-        codeCards.updateWallSummaries(state.summaries.fileTexts, scopedSummaryFill.pendingFiles)
+        codeCards.updateWallSummaries(snapshot.files)
     }
 
     /** File view reads the topics and summaries of the files [fileStructure] reaches, so it follows them like the topics card. */
@@ -688,12 +692,13 @@ internal class CodeReviewTab(
     }
 
     override fun renderCanvas() {
+        val snapshot = summarySnapshot()
         codeCards.words = if (state.wordsVisible) CodeWordsPage(wordCount?.words, wordScope, wordScopes,
             updating = wordCount?.counts(state.snapshot.files, wordScope) != true) else null
         codeCards.knowledge = if (state.knowledgeVisible) knowledge.content() else null
-        codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, state.summaries.fileTexts, scopedSummaryFill.pendingFiles) }
-        canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
-            explanation = explanations.result, charts = chartsCard(), reportViewer = reportViewerCard()))
+        codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, snapshot.files) }
+        canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(snapshot), topics = topicsCard(), fileView = fileViewCard(),
+            explanation = explanations.result, charts = chartsCard(snapshot), reportViewer = reportViewerCard()))
         canvas.highlight(selectedPaths().toSet())
         scheduleTileRefresh()
     }

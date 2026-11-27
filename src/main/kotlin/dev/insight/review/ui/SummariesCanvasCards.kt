@@ -24,6 +24,7 @@ import dev.insight.review.CanvasTabKey
 import dev.insight.review.ContextSummaryRequest
 import dev.insight.review.ContextSummaryVersion
 import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummarySnapshot
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
@@ -142,9 +143,9 @@ internal class SummariesCanvasCards(
         tab.diffPanel?.let(Disposer::dispose)
         tab.diffPanel = null
         val version = version(tab)
-        val content = if (version == null) original.copy(summaries = original.reading) else original.copy(
-            summaries = version.summaries, running = version.running, pendingEntries = emptySet(),
-        )
+        val snapshot = if (version == null) original.summarySnapshot.copy(summaries = original.reading)
+            else ReviewSummarySnapshot(version.summaries, running = version.running, canGenerate = false)
+        val content = original.copy(summarySnapshot = snapshot)
         val summariesView = tab.view
         val summariesTrace = tab.trace
         val key = tab.key

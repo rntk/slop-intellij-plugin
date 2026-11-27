@@ -19,7 +19,6 @@ import dev.insight.review.ReviewCodeLocation
 import com.intellij.psi.util.PsiModificationTracker
 import dev.insight.context.ContextSummaryActions
 import dev.insight.context.ReviewDestination
-import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.callgraph.ExplainChartResult
 import dev.insight.agent.ChatConversation
@@ -318,7 +317,10 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         }
         canvas.onReportViewerChanged = { scheduleTileRefresh() }
         return session.subscribe {
-            if (!session.busy) runningPipeline = null
+            if (!session.busy) {
+                runningPipeline = null
+                generatingReviewSummaries = false
+            }
             before()
             scopedSummaryFill.resume()
             updateControls()
@@ -338,6 +340,8 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     }
 
     fun highlight(paths: Set<String>) { canvas.highlight(paths) }
+
+    private var generatingReviewSummaries = false
 
     private val summariesAvailable: Boolean get() = !disposed && !state.refreshing && !session.busy && !canvas.topicSummariesRunning &&
         state.snapshotFiles.isNotEmpty()
@@ -532,22 +536,16 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         if (!disposed) focus()
     }
 
-    protected fun summariesCard(): SummariesCard? {
+    protected fun summariesCard(snapshot: ReviewSummarySnapshot): SummariesCard? {
         val pages = state.visibleSummaryPages
         if (pages.isEmpty()) return null
-        val summaries = state.summaries
-        return SummariesCard(summaries, session.busy, canSummarize, pendingSummaryEntries(summaries), pages)
+        return SummariesCard(snapshot, canSummarize, pages)
     }
 
-    private fun pendingSummaryEntries(summaries: ReviewSummaries): Set<Int> = scopedSummaryFill.pendingIds(summaries)
-
-    protected fun chartsCard(): ChartsCard? {
+    protected fun chartsCard(snapshot: ReviewSummarySnapshot): ChartsCard? {
         if (!state.chartsVisible) return null
-        val summaries = state.summaries
         return ChartsCard(
-            summaries = summaries,
-            canGenerateSummaries = summariesAvailable,
-            pendingEntries = pendingSummaryEntries(summaries),
+            summarySnapshot = snapshot,
             revision = state.revision,
             topics = state.topics,
             topicSummaries = state.topicSummaries,
@@ -564,13 +562,13 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     protected fun groupingCard() = if (state.groupingVisible) TopicsCard(state.grouping, state.summaries, canSummarize, state.groupingSummaries) else null
 
     /** Snapshot of the current summary state and pending fills for cards and extensions. */
-    protected fun summarySnapshot(running: Boolean = session.busy): ReviewSummarySnapshot {
+    protected fun summarySnapshot(): ReviewSummarySnapshot {
         val summaries = state.summaries
         return ReviewSummarySnapshot(
             summaries = summaries,
-            running = running,
-            canGenerate = canSummarize,
-            pendingIds = pendingSummaryEntries(summaries),
+            running = generatingReviewSummaries && session.busy,
+            canGenerate = summariesAvailable,
+            pendingIds = scopedSummaryFill.pendingIds(summaries),
             pendingFiles = scopedSummaryFill.pendingFiles,
         )
     }
@@ -579,7 +577,11 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     protected fun handleContextChange(change: ReviewContextChange) {
         when (change) {
             ReviewContextChange.SOURCE -> renderCanvas()
-            ReviewContextChange.SUMMARIES_STARTED -> { scopedSummaryFill.cancel(); renderCanvas() }
+            ReviewContextChange.SUMMARIES_STARTED -> {
+                generatingReviewSummaries = true
+                scopedSummaryFill.cancel()
+                renderCanvas()
+            }
             ReviewContextChange.TOPICS_STARTED -> canvas.updateTopics(topicsCard())
             ReviewContextChange.GROUPING_STARTED -> canvas.updateGrouping(groupingCard())
             ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.GROUPING_SUMMARIES_STARTED -> {
@@ -598,10 +600,10 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     protected fun stopCanvasRefresh() { canvasTimer.stop() }
 
     /** The topics and grouping cards show the file summaries too, so they follow every summary and chat update. */
-    protected open fun summariesChanged() {
+    protected open fun summariesChanged(snapshot: ReviewSummarySnapshot = summarySnapshot()) {
         canvasTimer.stop()
-        canvas.updateSummaries(summariesCard())
-        canvas.updateCharts(chartsCard())
+        canvas.updateSummaries(summariesCard(snapshot))
+        canvas.updateCharts(chartsCard(snapshot))
         canvas.updateReportViewer(reportViewerCard())
         canvas.updateTopics(topicsCard())
         canvas.updateGrouping(groupingCard())

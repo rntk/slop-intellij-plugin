@@ -30,7 +30,7 @@ internal class ChangeSummaryHierarchyPanel(
     private val wordWeights = SummaryWordWeights(summaries)
     private val tree = summaries.tree
     /** The selected node is outlined with every file or part beneath it. */
-    private val active: Set<String> = tree.nodes.firstOrNull { it.identity == state.selected }?.let { selected ->
+    private val active: Set<String> = tree.byIdentity(state.selected)?.let { selected ->
         val ids = hashSetOf<String>()
         val pending = ArrayDeque(listOf(selected))
         while (pending.isNotEmpty()) pending.removeFirst().let { ids += it.identity; it.children.mapTo(pending, tree::get) }
@@ -194,7 +194,7 @@ internal class ChangeSummaryDocumentPanel(
     private val wordWeights = SummaryWordWeights(summaries)
     private val tree = summaries.tree
     private val nodesByIdentity = tree.nodes.associateBy { it.identity }
-    private val fileNodes = tree.nodes.filter { it.kind == SummaryKind.FILE && it.file != null && state.shows(it, summaries) }
+    private val fileNodes = tree.fileNodes.filter { it.file != null && state.shows(it, summaries) }
     val files: List<ReviewSource> = fileNodes.map { requireNotNull(it.file) }
     private val nodesByPath = fileNodes.associateBy { it.path }
     private val indexByPath = files.withIndex().associate { (index, file) -> file.path to index }
@@ -262,8 +262,7 @@ internal class ChangeSummaryDocumentPanel(
                 summaryLabel = "File summary",
             )
         }
-        val fileSummaries = fileNodes.associate { it.path to summaries.text(it.id) }
-        layoutDocument(files, fileSummaries, items, depth, width, missing, loaded) { next ->
+        layoutDocument(files, summaries.fileTexts, items, depth, width, missing, loaded) { next ->
             state.documentFiles = next
             actions.refresh()
         }

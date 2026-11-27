@@ -1,5 +1,6 @@
 package dev.insight.review.wall
 
+import dev.insight.review.FileSummaries
 import java.awt.Point
 import kotlin.math.abs
 import kotlin.math.floor
@@ -105,14 +106,13 @@ data class WallScope(val paths: List<String>?, val title: String)
 
 /**
  * What a wall shows: [scope] names it and keeps its layout; [blocks] are its eager files, in order; [summaries] holds the
- * summary text of the files that have one, by path; [summarizing] the files whose summary is being written. When [blockFor]
+ * file summaries and the files whose summary is being written. When [blockFor]
  * is provided, [allPaths] lists every file in order and blocks are constructed lazily for loaded paths.
  */
 internal data class WallContent(
     val scope: WallScope,
     val blocks: List<WallBlock>,
-    val summaries: Map<String, String> = emptyMap(),
-    val summarizing: Set<String> = emptySet(),
+    val summaries: FileSummaries = FileSummaries(),
     val allPaths: List<String> = blocks.map { it.path },
     val blockFor: ((String) -> WallBlock?)? = null,
 )

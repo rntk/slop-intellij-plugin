@@ -25,7 +25,6 @@ import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
-import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.TopicNode
 import dev.insight.review.TopicOutline
@@ -142,8 +141,7 @@ internal class ChangeTopicsViewState(
             val outline = full.takeIf { previous?.card?.topics === card.topics } ?: topicOutline(card.topics)
             full = outline
             shown = if (topicQuery.isEmpty() && summaryQuery.isEmpty()) outline else {
-                val summaries = card.summaries
-                val texts = summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to summaries.text(it.id) }
+                val texts = card.summaries.fileTexts
                 val kept = card.topics.files.filter { file ->
                     (topicQuery.isEmpty() || card.topics.labels[file.path]?.let { fuzzyMatches(topicQuery, it) } == true) &&
                         (summaryQuery.isEmpty() || fuzzyMatches(summaryQuery, listOfNotNull(file.path, texts[file.path]).joinToString(" ")))
@@ -440,8 +438,7 @@ internal abstract class DocumentColumnsPanel(
         val railInsets = 2 + cardScaled(RAIL_ACCENT) + cardScaled(8) + cardScaled(6)
         val cardWidth = maxOf(cardScaled(RAIL_CARD_WIDTH),
             (items.maxOfOrNull(::titleWidth) ?: 0) + railInsets + JBUI.scale(2))
-        val measured = if (built == allFiles.size) summaries else files.associate { it.path to summaries[it.path] }
-        val summaryWordWidth = (measured.mapNotNull { (path, summary) -> summary?.let { summaryWordWidth("file:$path", it) } } +
+        val summaryWordWidth = (files.mapNotNull { file -> summaries[file.path]?.let { summaryWordWidth("file:${file.path}", it) } } +
             items.mapNotNull { item -> item.summary?.let { summaryWordWidth(item.key, it) } }).maxOrNull() ?: 0
         val summaryTitleWidth = items.maxOfOrNull(::titleWidth) ?: 0
         val summaryWidth = maxOf(cardScaled(SUMMARY_WIDTH),
@@ -884,7 +881,6 @@ internal class ChangeTopicsPanel(
                 placeholder = true,
             )
         })
-        val summaries = card.summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to card.summaries.text(it.id) }
         // A traced match beyond the files built so far extends the document down to it.
         val revealed = state.reveal?.let { target ->
             if (target.startsWith(ChangeTopicsViewState.TOPIC))
@@ -892,7 +888,7 @@ internal class ChangeTopicsPanel(
             else outline.files.indexOfFirst { "file:${it.path}" == target }.takeIf { it >= 0 }
         }
         state.documentFiles = documentPage(state.documentFiles, revealed)
-        layoutDocument(outline.files, summaries, items, depth, width, loaded = state.documentFiles) { next ->
+        layoutDocument(outline.files, card.summaries.fileTexts, items, depth, width, loaded = state.documentFiles) { next ->
             state.documentFiles = next
             actions.refresh()
         }

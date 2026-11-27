@@ -70,7 +70,6 @@ internal fun buildTopicSummaryTree(topics: ReviewTopics, chunks: (ReviewSource) 
  */
 internal fun topicReadingSummaries(topics: ReviewSummaries, shared: ReviewSummaries): ReviewSummaries {
     val tree = topics.tree
-    val fileNodes = shared.tree.nodes.filter { it.kind == SummaryKind.FILE }.associateBy { it.path }
     val byFiles = summariesByFiles(shared)
     val nodes = mutableListOf<SummaryNode>()
     val texts = mutableMapOf<Int, Summary>()
@@ -87,7 +86,7 @@ internal fun topicReadingSummaries(topics: ReviewSummaries, shared: ReviewSummar
         nodes += node.copy(id = id, parent = parent, children = emptyList())
         val kept = shown(old)
         val text = if (node.kind == SummaryKind.FILE)
-            fileNodes[node.path]?.let { file -> shared.flattened(file.id) { null } } ?: topics.flattened(old) { null }
+            shared.tree.scopeNode(node.path, SummaryKind.FILE)?.let { file -> shared.flattened(file.id) { null } } ?: topics.flattened(old) { null }
         else topics.flattened(old) { child -> kept.indexOf(child.id).takeIf { it >= 0 } }
             ?: byFiles[node.files.toSet()]?.summary?.unlinked()
         text?.let { texts[id] = it }

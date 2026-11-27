@@ -945,7 +945,7 @@ internal class NoteCanvas(
         val content = currentContent() ?: return
         if (!content.canRun || summaryGenerationRunning) return
         val seeded = seedTopicSummaries(content.topicSummaries, content.summaries)
-        val node = seeded.tree.nodes.firstOrNull { it.identity == identity } ?: return
+        val node = seeded.tree.byIdentity(identity) ?: return
         val request = if (recursive == null) fillSummaryRequest(seeded, node) else {
             val instructions = requestResummaryInstructions(node, recursive, ResummaryDestination.TOPICS) ?: return
             resummaryRequest(seeded, node, recursive, instructions) { it.isTopicBranch }
