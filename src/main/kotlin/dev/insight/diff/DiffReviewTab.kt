@@ -209,7 +209,7 @@ internal class DiffReviewTab(
             summarize = { summarize() },
             contextSummaryActions = contextSummaryActions,
             removeSummaries = ::closeSummaryPage,
-            markReviewed = state::setReviewed,
+            markReviewed = state::setReviewedPaths,
             contextSummaries = summaryLauncher,
             deleteOriginalSummaries = ::clearOriginalSummaries,
             // The cited lines are those of the snapshot file, so its diff opens rather than the current one.

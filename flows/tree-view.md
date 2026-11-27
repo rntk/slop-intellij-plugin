@@ -14,6 +14,8 @@ The summary follows the file, folder, or card that is hovered or selected. It si
 
 Escape or a click on the canvas background clears the active selection. Clicking a topic or group card clears the tree selection and lets readers explore the card, and right-clicking a card opens the [context picker](context-picker.md) menu for its files. Dragging to pan preserves the selection. Row actions appear on hover or when the row is active, and hovering a nested card also highlights its parents.
 
+Row checkboxes mark files **Viewed** or **Unviewed**. A folder checkbox marks its files in the current scope, including folded rows. These marks are shared with Summaries' **Reviewed** label. **Show only unviewed** keeps unviewed files and their ancestor folders in the tree.
+
 ## Source preview
 
 A control panel toggle lets the source or diff of the hovered or active file or folder follow the reader in a floating window. Unlike the summary and cards, the window is docked to the board's edge rather than placed on the canvas, so it stays readable and steady while the tree pans and zooms. Short content opens beside its row; taller content moves toward the top of the board to use its full height, and a folder stacks the first few of its files. Changes wait briefly, and longer while the pointer heads for the window, so readers can reach it across other rows. Each file and folder row also has a preview icon that pins its window, even while the toggle is off.

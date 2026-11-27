@@ -131,7 +131,8 @@ internal class NoteCanvas(
         openOnWall = summaryActions.openOnWall, reviewDestinations = { reviewDestinations() },
         summaryActions = summaryActions.contextSummaryActions, openAt = { path, line -> openFileAt(path, line) },
         outlines = sourceActions.outlines, symbolSummaries = summaryActions.symbolSummaries, search = summaryActions.chartSearch,
-        explainConnection = summaryActions.explainConnection, treeBriefer = summaryActions.treeBriefer)
+        explainConnection = summaryActions.explainConnection, treeBriefer = summaryActions.treeBriefer,
+        reviewed = reviewed, markViewed = ::toggleViewedPaths)
     internal val chartsView get() = chartsCardBuilder.view
     private val reportViewer: ReportViewerCard? get() = state.reportViewer
     /** What the Report viewer's close button does: take the page off the canvas. */
@@ -160,7 +161,17 @@ internal class NoteCanvas(
 
     /** Marks restyle the live cards; rebuilding them would reset both viewports and make the reading position jump. */
     private fun toggleReviewed(node: SummaryNode, value: Boolean) {
-        if (summaryActions.markReviewed != null) summaryActions.markReviewed.invoke(node, value) else reviewed.set(node.files, value)
+        toggleViewedPaths(node.files, value)
+    }
+
+    private fun toggleViewedPaths(paths: List<String>, value: Boolean) {
+        if (summaryActions.markReviewed != null) summaryActions.markReviewed.invoke(paths, value)
+        else reviewed.set(paths, value)
+        syncReviewedViews()
+    }
+
+    private fun syncReviewedViews() {
+        chartsCardBuilder.refreshViewed()
         summariesCardBuilder.syncReview()
         topicsCardBuilder.syncReview()
         groupingCardBuilder.syncReview()

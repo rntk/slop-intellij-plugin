@@ -40,6 +40,7 @@ import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewedFiles
 import dev.insight.review.SourceOutlines
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
@@ -121,6 +122,7 @@ internal class ChartsViewState {
     var linesFocused = false
     /** Collapsed directories in the Tree board, kept across metric changes. */
     var treeCollapsed: Set<String> = emptySet()
+    var treeShowOnlyUnviewed = false
     /** File summaries expanded inline in the Tree board, kept across metric changes. */
     var treeExpandedSummaries: Set<String> = emptySet()
     /** Whether all available file summaries are shown in the Tree board. */
@@ -181,6 +183,8 @@ internal class ChartsCanvasCard(
     private val explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
     /** Creates the model client behind Tree one-line briefs; called off the EDT. Null hides the control. */
     private val treeBriefer: (() -> TreeBriefer)? = null,
+    private val reviewed: ReviewedFiles? = null,
+    private val markViewed: ((List<String>, Boolean) -> Unit)? = null,
 ) : Disposable {
     val view = ChartsViewState()
     private val zoom = 1.0
@@ -200,6 +204,7 @@ internal class ChartsCanvasCard(
     private var treeBriefs: TreeBriefs? = null
     private val chartsContent = MutableStateFlow<ChartsCard?>(null)
     private var currentTreeBoard: TreeBoardPanel? = null
+    fun refreshViewed() { currentTreeBoard?.refreshViewed() }
     /** The review revision of the last built card; a search of another revision is stale. */
     private var searchRevision = 0
 
@@ -344,6 +349,10 @@ internal class ChartsCanvasCard(
             vocabulary.rootName,
             open,
             contextMenu = project?.let { { entry -> contextMenu(content.tree, entry, hierarchy.files(entry.path)) } },
+            reviewed = reviewed,
+            markViewed = markViewed,
+            initialShowOnlyUnviewed = view.treeShowOnlyUnviewed,
+            showOnlyUnviewedChanged = { view.treeShowOnlyUnviewed = it },
             collapsed = view.treeCollapsed,
             collapsedChanged = { view.treeCollapsed = it },
             cursorPath = view.treeCursor,

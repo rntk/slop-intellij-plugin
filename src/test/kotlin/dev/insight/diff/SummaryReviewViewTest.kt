@@ -49,7 +49,7 @@ class SummaryReviewViewTest : BasePlatformTestCase() {
             val node = tree.nodes.single { it.path == "docs/readme.md" }
             val texts = tree.nodes.associate { it.id to "Summary for ${it.path.ifEmpty { "root" }}" }
             val summaries = ReviewSummaries(tree, texts)
-            val canvas = NoteCanvas({}, {}, reviewed = state.reviewed, summaryActions = SummaryCanvasActions(markReviewed = state::setReviewed)).apply {
+            val canvas = NoteCanvas({}, {}, reviewed = state.reviewed, summaryActions = SummaryCanvasActions(markReviewed = state::setReviewedPaths)).apply {
                 setSize(1600, 900)
                 summariesView.mode = mode
                 if (mode == ReviewSummariesMode.EXPLORER) summariesView.browse("directory:docs", tree)

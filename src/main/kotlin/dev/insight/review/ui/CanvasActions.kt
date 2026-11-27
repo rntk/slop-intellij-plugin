@@ -58,7 +58,7 @@ internal data class SummaryCanvasActions(
     val explainNode: ((SummaryNode) -> Unit)? = null,
     /** Open a chat with an entry’s displayed hierarchy and summary version; null hides To Chat. */
     val chatNode: ((SummaryNode, ReviewSummaries) -> Unit)? = null,
-    val markReviewed: ((SummaryNode, Boolean) -> Unit)? = null,
+    val markReviewed: ((List<String>, Boolean) -> Unit)? = null,
     val contextSummaryActions: ContextSummaryActions? = null,
     val symbolSummaries: SymbolSummaryActions? = null,
     /** Finds files for a Charts query; null hides the search. */

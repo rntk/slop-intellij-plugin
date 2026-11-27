@@ -20,6 +20,7 @@ import dev.insight.review.RadarSeries
 import dev.insight.review.ReportTargetKind
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewTreeBoard
+import dev.insight.review.ReviewedFiles
 import dev.insight.review.SummaryLinkSpan
 import dev.insight.review.TreeBoardHighlight
 import dev.insight.review.TreeBoardGroupHighlight
@@ -184,6 +185,10 @@ internal class TreeBoardPanel(
     previewWidthChanged: (Int) -> Unit = {},
     /** Builds a preview's viewer; null uses the IDE's read-only editor or diff viewer. */
     createPreviewViewer: ((ReviewSource) -> JComponent)? = null,
+    private val reviewed: ReviewedFiles? = null,
+    private val markViewed: ((List<String>, Boolean) -> Unit)? = null,
+    initialShowOnlyUnviewed: Boolean = false,
+    private val showOnlyUnviewedChanged: (Boolean) -> Unit = {},
 ) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
@@ -200,6 +205,20 @@ internal class TreeBoardPanel(
     private val isFocused: Boolean get() = focusSelection?.links != null
     private val activeCollapsedPaths: Set<String> get() = if (isFocused) focusCollapsedPaths else collapsedPaths
     private val visibleFocusFiles: Set<String>? get() = focusSelection?.links?.visibleFiles
+    private var viewedPaths = readViewedPaths()
+    private val viewedDirectories = HashMap<String, Boolean>()
+    private var viewedRevision = reviewed?.revision
+    private var showOnlyUnviewed = initialShowOnlyUnviewed && reviewed != null
+    private val visibleFiles: Set<String>?
+        get() = if (showOnlyUnviewed) {
+            (visibleFocusFiles ?: chartFiles).minus(viewedPaths)
+        } else {
+            visibleFocusFiles
+        }
+
+    private val chartFiles: Set<String> by lazy {
+        chart.files(chart.root.path).mapNotNullTo(HashSet()) { it.path.takeIf { path -> chart.entry(path) != null } }
+    }
 
     private val viewport = TreeBoardViewport(initialPanX ?: 0.0, initialPanY, initialZoom)
     private var cursorIndex: Int = -1
@@ -407,12 +426,27 @@ internal class TreeBoardPanel(
         accentProvider = { accentColor },
     )
 
+    private val unviewedToggle = PillToggleButton(
+        text = "Show only unviewed",
+        name = "charts-tree-show-only-unviewed",
+        tooltip = "Show unviewed files and their folders",
+        selected = showOnlyUnviewed,
+        accentProvider = { accentColor },
+    ).apply {
+        addActionListener {
+            showOnlyUnviewed = isSelected
+            rebuildBoard(this@TreeBoardPanel.cursorPath)
+            showOnlyUnviewedChanged(isSelected)
+        }
+    }
+
     val controls = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
         name = "charts-tree-controls"
         isOpaque = false
         add(sourcePreviewToggle)
         add(summaryCardToggle)
         add(summariesButton)
+        if (reviewed != null) add(unviewedToggle)
         if (rail != null) {
             add(ToolbarDivider())
             if (railModeSelector != null) add(railModeSelector) else add(railToggleButton)
@@ -425,11 +459,7 @@ internal class TreeBoardPanel(
 
     private val details = object : JPanel(CardLayout()) {
         override fun getPreferredSize(): Dimension {
-            val active = when {
-                connectionSelection != null -> connectionStatus
-                focusSelection != null -> focusStatus
-                else -> statusLabel
-            }
+            val active = activeDetailsStatus()
             val d = active.preferredSize
             return Dimension(if (active.text.isNullOrEmpty()) 0 else d.width, maxOf(d.height, totalLabel.preferredSize.height))
         }
@@ -473,7 +503,7 @@ internal class TreeBoardPanel(
         host = canvas,
         sources = { target ->
             if (target.directory) {
-                val files = chart.files(target.path).filter { visibleFocusFiles?.contains(it.path) ?: true }
+                val files = visibleSources(target.path)
                 files.take(TreeSourcePreviewController.FOLDER_FILES) to files.size
             } else {
                 listOfNotNull(chart.source(target.path)) to 1
@@ -538,12 +568,10 @@ internal class TreeBoardPanel(
             canvas.repaint()
         }
 
-    var board: ReviewTreeBoard = ReviewTreeBoard(
-        chart,
-        if (initialFocusSelection?.links != null) emptySet() else collapsedPaths,
-        initialFocusSelection?.links?.visibleFiles,
-        railFileOrder,
-    )
+    private var boardVisibleFiles = visibleFiles
+
+    var board: ReviewTreeBoard =
+        ReviewTreeBoard(chart, activeCollapsedPaths, boardVisibleFiles, railFileOrder, summarizeFilteredFiles = showOnlyUnviewed)
         private set
 
     var connectionSelection: TreeConnectionSelection? = null
@@ -722,9 +750,7 @@ internal class TreeBoardPanel(
     val pinnedPreviewPath: String? get() = sourcePreview.pinned?.path
 
     init {
-        cursorIndex = board.indexOf(cursorPath).let {
-            if (it >= 0) it else if (cursorPath != null && board.nodes.isNotEmpty()) 0 else -1
-        }
+        cursorIndex = cursorIndexFor(cursorPath)
         name = "charts-tree-board"
         isOpaque = false
         isFocusable = true
@@ -779,16 +805,17 @@ internal class TreeBoardPanel(
 
     fun foldAll() {
         val all = board.allCollapsiblePaths()
-        if (all == activeCollapsedPaths) return
+        val next = if (showOnlyUnviewed) all + (activeCollapsedPaths - chart.root.path) else all
+        if (next == activeCollapsedPaths) return
         val nextCursor = cursorPath?.let { path ->
             val topDir = all.firstOrNull { path == it || (it.isNotEmpty() && ReviewLineChart.isBeneath(path, it)) }
             topDir ?: path
         }
         if (isFocused) {
-            focusCollapsedPaths = all
+            focusCollapsedPaths = next
             rebuildBoard(nextCursor)
         } else {
-            collapsedPaths = all
+            collapsedPaths = next
             rebuildBoard(nextCursor)
             collapsedChanged(collapsedPaths)
         }
@@ -876,18 +903,64 @@ internal class TreeBoardPanel(
     fun summaryButtonScreenBounds(path: String): Rectangle? =
         board.nodes.getOrNull(board.indexOf(path))?.let(canvas::summaryButtonBounds)
 
+    fun viewedButtonScreenBounds(path: String): Rectangle? =
+        board.nodes.getOrNull(board.indexOf(path))?.let(canvas::viewedButtonBounds)
+
     fun summaryBlockScreenBounds(path: String): Rectangle? =
         board.nodes.getOrNull(board.indexOf(path))?.let(canvas::summaryBlockScreenBounds)
 
     internal fun briefStartScreenX(path: String): Int? =
         board.nodes.getOrNull(board.indexOf(path))?.let(canvas::briefStartScreenX)
 
+    private fun readViewedPaths(): Set<String> = reviewed?.let { marks ->
+        chart.files(chart.root.path).mapNotNullTo(HashSet()) { it.path.takeIf(marks::isReviewed) }
+    }.orEmpty()
+
+    /** Keeps Charts synchronized when a mark changes in another review view. */
+    fun refreshViewed() {
+        if (viewedRevision == reviewed?.revision) return
+        viewedRevision = reviewed?.revision
+        viewedPaths = readViewedPaths()
+        viewedDirectories.clear()
+        if (showOnlyUnviewed) rebuildBoard(cursorPath) else canvas.repaint()
+    }
+
+    private fun canMarkViewed(node: TreeBoardNode): Boolean =
+        markViewed != null && reviewed != null && node.entry.files > 0
+
+    private fun isViewed(node: TreeBoardNode): Boolean =
+        if (!node.entry.directory) node.entry.path in viewedPaths
+        else if (viewedPaths.isEmpty() || showOnlyUnviewed) false
+        else viewedDirectories.getOrPut(node.entry.path) {
+            val paths = reviewablePaths(node.entry.path)
+            paths.isNotEmpty() && paths.all { it in viewedPaths }
+        }
+
+    private fun reviewablePaths(folder: String): List<String> {
+        val focusFiles = visibleFocusFiles
+        return chart.files(folder).mapNotNull { source ->
+            source.path.takeIf { it in chartFiles && (focusFiles == null || it in focusFiles) }
+        }
+    }
+
+    private fun toggleViewed(node: TreeBoardNode) {
+        val paths = if (node.entry.directory) reviewablePaths(node.entry.path) else listOf(node.entry.path)
+        if (paths.isEmpty()) return
+        markViewed?.invoke(paths, !isViewed(node))
+        refreshViewed()
+    }
+
+    private fun visibleSources(path: String): List<ReviewSource> =
+        chart.files(path).filter { boardVisibleFiles?.contains(it.path) ?: true }
+
     private fun rebuildBoard(preferredCursorPath: String?) {
         val previousHover = hoveredPath
-        board = ReviewTreeBoard(chart, activeCollapsedPaths, visibleFocusFiles, railFileOrder)
-        cursorIndex = board.indexOf(preferredCursorPath).let {
-            if (it >= 0) it else if (preferredCursorPath != null && board.nodes.isNotEmpty()) 0 else -1
-        }
+        val previousVisibleFiles = boardVisibleFiles
+        boardVisibleFiles = visibleFiles
+        val scopeChanged = previousVisibleFiles != boardVisibleFiles
+        if (scopeChanged) viewedDirectories.clear()
+        board = ReviewTreeBoard(chart, activeCollapsedPaths, boardVisibleFiles, railFileOrder, summarizeFilteredFiles = showOnlyUnviewed)
+        cursorIndex = cursorIndexFor(preferredCursorPath)
         hoveredIndex = board.indexOf(previousHover)
         updateStatus()
         updateConnectionStatus()
@@ -895,9 +968,28 @@ internal class TreeBoardPanel(
         updateGroupHighlight()
         canvas.invalidateRowLayout()
         syncRailPlacements()
+        if (scopeChanged) {
+            sourcePreview.release()
+            val pinned = sourcePreview.pinned
+            if (pinned != null && visibleSources(pinned.path).isEmpty()) sourcePreview.pin(null)
+        }
         updateSidePanels()
+        if (scopeChanged) sourcePreview.restore()
         canvas.repaint()
         cursorChanged(cursorPath)
+    }
+
+    private fun cursorIndexFor(path: String?): Int {
+        if (path == null) return -1
+        var index = board.indexOf(path)
+        if (showOnlyUnviewed) {
+            var ancestor: String = path
+            while (index < 0 && '/' in ancestor) {
+                ancestor = ancestor.substringBeforeLast('/')
+                index = board.indexOf(ancestor)
+            }
+        }
+        return if (index >= 0 || board.nodes.isEmpty()) index else 0
     }
 
     private fun clearTreeSelection() {
@@ -1048,14 +1140,14 @@ internal class TreeBoardPanel(
 
     private fun syncRailPlacements() {
         val model = railModel ?: return
-        val placements = computeTreeRailPlacements(model, board) { dir -> chart.files(dir).map { it.path } }
+        val placements = computeTreeRailPlacements(model, board) { dir -> visibleSources(dir).map { it.path } }
         rail?.setPlacements(placements)
     }
 
     private fun updateGroupHighlight() {
         val active = activeRailCard
         groupHighlight = if (active == null) null else board.highlightFiles(active.files) { dir ->
-            chart.files(dir).map { it.path }
+            visibleSources(dir).map { it.path }
         }
     }
 
@@ -1085,7 +1177,7 @@ internal class TreeBoardPanel(
         if (node == null) return emptySet()
         return when {
             node.entry.kind == ReviewLineChart.Kind.FILE -> model.matchingCardKeys(node.entry.path)
-            node.entry.directory -> model.matchingCardKeysForFiles(chart.files(node.entry.path).map { it.path })
+            node.entry.directory -> model.matchingCardKeysForFiles(visibleSources(node.entry.path).map { it.path })
             else -> emptySet()
         }
     }
@@ -1127,7 +1219,7 @@ internal class TreeBoardPanel(
             )
         }
         val filesText = fileCount(node.entry.files)
-        val dirFiles = chart.files(path).map { it.path }
+        val dirFiles = visibleSources(path).map { it.path }
         return TreeSummaryDisplay(
             kindLabel = if (node.depth == 0) "Scope summary" else "Folder summary",
             title = if (node.depth == 0) rootLabel else "${node.entry.label}/",
@@ -1138,15 +1230,18 @@ internal class TreeBoardPanel(
         )
     }
 
-    private fun totalSummaryText(): String {
-        val root = chart.root
+    private fun totalSummaryText(root: ReviewLineChart.Entry = chart.root): String {
         val count = valueText(root.value)
         return if (metric == LineChartMetric.ITEMS) count else "$count · ${fileCount(root.files)}"
     }
 
     private fun updateStatus() {
+        val root = board.nodes.first().entry
+        totalLabel.text = totalSummaryText(root)
         val node = board.nodes.getOrNull(hoveredIndex) ?: board.nodes.getOrNull(cursorIndex)
-        statusLabel.text = if (node == null) {
+        statusLabel.text = if (noUnviewedFiles()) {
+            "No unviewed files"
+        } else if (node == null) {
             when {
                 board.nodes.isNotEmpty() -> ""
                 metric.hidesEmpty -> "No ${metric.plural} here"
@@ -1214,12 +1309,17 @@ internal class TreeBoardPanel(
         updateDetailsCard()
     }
 
+    private fun noUnviewedFiles(): Boolean = showOnlyUnviewed && board.nodes.first().entry.files == 0
+
+    private fun activeDetailsStatus(): JLabel = when {
+        noUnviewedFiles() -> statusLabel
+        connectionSelection != null -> connectionStatus
+        focusSelection != null -> focusStatus
+        else -> statusLabel
+    }
+
     private fun updateDetailsCard() {
-        val active = when {
-            connectionSelection != null -> connectionStatus
-            focusSelection != null -> focusStatus
-            else -> statusLabel
-        }
+        val active = activeDetailsStatus()
         details.isVisible = !active.text.isNullOrEmpty()
         (details.layout as CardLayout).show(details, active.name)
         positionStatusHud()
@@ -1418,6 +1518,7 @@ internal class TreeBoardPanel(
     private val briefButtonWidth get() = JBUI.scale(22)
     private val summaryButtonWidth get() = JBUI.scale(22)
     private val previewButtonWidth get() = JBUI.scale(22)
+    private val viewedButtonWidth get() = JBUI.scale(22)
     private val briefGap get() = JBUI.scale(12)
     private val summaryMaxWorldWidth get() = JBUI.scale(520).toDouble()
     private val summaryPadX get() = JBUI.scale(8).toDouble()
@@ -1687,6 +1788,11 @@ internal class TreeBoardPanel(
                         }
                         return
                     }
+                    if (viewedButtonBounds(node)?.contains(e.point) == true) {
+                        moveCursor(node.index, reveal = false)
+                        if (e.clickCount == 1) toggleViewed(node)
+                        return
+                    }
                     if (showRowActions(node) && focusButtonBounds(node)?.contains(e.point) == true) {
                         moveCursor(node.index, reveal = false)
                         if (e.clickCount == 1) toggleFocus?.invoke(node.entry.path, node.entry.directory)
@@ -1759,7 +1865,14 @@ internal class TreeBoardPanel(
                         return activateConnection(e)
                     }
                     moveCursor(node.index, reveal = false)
-                    val menu = contextMenu?.invoke(node.entry)?.takeIf { it.componentCount > 0 } ?: return false
+                    val menu = contextMenu?.invoke(node.entry) ?: JPopupMenu()
+                    if (canMarkViewed(node)) {
+                        if (menu.componentCount > 0) menu.addSeparator()
+                        menu.add(JMenuItem(viewedActionLabel(node)).apply {
+                            addActionListener { toggleViewed(node) }
+                        })
+                    }
+                    if (menu.componentCount == 0) return false
                     menu.show(this@TreeBoardCanvas, e.x, e.y)
                     return true
                 }
@@ -1834,6 +1947,7 @@ internal class TreeBoardPanel(
 
         private fun buttonScreenWidth(node: TreeBoardNode): Int {
             var width = 0
+            if (canMarkViewed(node)) width += (viewedButtonWidth * viewport.zoom).roundToInt()
             if (hasPreviewButton(node)) width += (previewButtonWidth * viewport.zoom).roundToInt()
             if (hasFocusButton(node)) width += (focusButtonWidth * viewport.zoom).roundToInt()
             if (hasConnectionButton(node)) width += (connectionButtonWidth * viewport.zoom).roundToInt()
@@ -1844,6 +1958,7 @@ internal class TreeBoardPanel(
 
         private fun buttonWorldWidth(node: TreeBoardNode): Int {
             var width = 0
+            if (canMarkViewed(node)) width += viewedButtonWidth
             if (hasPreviewButton(node)) width += previewButtonWidth
             if (hasFocusButton(node)) width += focusButtonWidth
             if (hasConnectionButton(node)) width += connectionButtonWidth
@@ -1886,13 +2001,25 @@ internal class TreeBoardPanel(
             return Rectangle(row.x + row.width - connWidth - focusWidth - briefWidth - width, row.y, width, row.height)
         }
 
-        /** The preview icon, left of every other row action. */
         fun previewButtonBounds(node: TreeBoardNode): Rectangle? {
             if (!hasPreviewButton(node)) return null
             val width = (previewButtonWidth * viewport.zoom).roundToInt()
-            val others = buttonScreenWidth(node) - width
+            val viewedWidth = if (canMarkViewed(node)) (viewedButtonWidth * viewport.zoom).roundToInt() else 0
+            val others = buttonScreenWidth(node) - width - viewedWidth
             val row = rowScreenBounds(node)
             return Rectangle(row.x + row.width - others - width, row.y, width, row.height)
+        }
+
+        fun viewedButtonBounds(node: TreeBoardNode): Rectangle? {
+            if (!canMarkViewed(node)) return null
+            val width = (viewedButtonWidth * viewport.zoom).roundToInt()
+            val row = rowScreenBounds(node)
+            return Rectangle(row.x + row.width - buttonScreenWidth(node), row.y, width, row.height)
+        }
+
+        private fun viewedActionLabel(node: TreeBoardNode): String {
+            val action = if (isViewed(node)) "Mark as unviewed" else "Mark as viewed"
+            return if (node.entry.directory) "$action (files in current scope)" else action
         }
 
         fun summaryBlockScreenBounds(node: TreeBoardNode): Rectangle? {
@@ -2031,9 +2158,9 @@ internal class TreeBoardPanel(
             var maxRight = board.nodes.maxOfOrNull { rowRightWorld(it, boldMetrics, plainMetrics, layout, briefStartWorldByParent) } ?: 0.0
             val laneCount = visibleConnections().size
             if (laneCount > 0) maxRight += connectionLaneOffset(laneCount - 1)
-            val unfoldedKey = visibleFocusFiles to isRailVisible
+            val unfoldedKey = boardVisibleFiles to isRailVisible
             val unfolded = cachedUnfoldedRight?.takeIf { it.first == unfoldedKey }?.second
-                ?: ReviewTreeBoard(chart, emptySet(), visibleFocusFiles).nodes
+                ?: ReviewTreeBoard(chart, visibleFiles = boardVisibleFiles, summarizeFilteredFiles = showOnlyUnviewed).nodes
                     .maxOfOrNull { rowRightWorld(it, boldMetrics, plainMetrics, null) }.let { it ?: 0.0 }
                     .also { cachedUnfoldedRight = unfoldedKey to it }
             return maxOf(maxRight, unfolded).also { cachedTreeRight = it }
@@ -2084,6 +2211,7 @@ internal class TreeBoardPanel(
                     "${it.from} → ${it.to} · Click to inspect snippets · Right-click for context"
                 }
             }
+            if (viewedButtonBounds(node)?.contains(event.point) == true) return viewedActionLabel(node)
             if (showRowActions(node) && focusButtonBounds(node)?.contains(event.point) == true) {
                 return if (focusSelection?.path == node.entry.path) "Exit focus mode (F)"
                 else "Focus tree on linked files (F)"
@@ -2333,12 +2461,8 @@ internal class TreeBoardPanel(
 
                     val labelText = nodeLabel(node)
                     g.font = labelFont
-                    g.color = when {
-                        i == cursorIndex || i == hoveredIndex -> UIUtil.getLabelForeground()
-                        isBranchActive && node.entry.directory -> UIUtil.getLabelForeground()
-                        node.entry.directory -> UIUtil.getLabelForeground()
-                        else -> UIUtil.getLabelForeground()
-                    }
+                    val viewed = isViewed(node)
+                    g.color = if (viewed) UIUtil.getContextHelpForeground() else UIUtil.getLabelForeground()
                     g.drawString(labelText, textX, baselineY)
 
                     val badgeX = textX + lm.stringWidth(labelText)
@@ -2354,6 +2478,13 @@ internal class TreeBoardPanel(
                         g.color = groupColor
                         g.fillOval(dotX, dotY, dotSize, dotSize)
                         visibleRowEndX = (dotX + dotSize).toDouble()
+                    }
+                    if (canMarkViewed(node)) {
+                        val rowEnd = startX + rowContentScreenWidth(node, boldMetrics, plainMetrics)
+                        val viewedWidth = (viewedButtonWidth * viewport.zoom).roundToInt()
+                        val left = rowEnd - buttonScreenWidth(node)
+                        paintViewedButton(g, left + viewedWidth / 2.0, centerY, viewed)
+                        visibleRowEndX = left + viewedWidth
                     }
                     if (showRowActions(node)) {
                         val rowWidth = rowContentScreenWidth(node, boldMetrics, plainMetrics)
@@ -2420,6 +2551,21 @@ internal class TreeBoardPanel(
                 lineTo(edge, centerY + size)
                 closePath()
             })
+        }
+
+        private fun paintViewedButton(g: Graphics2D, x: Double, y: Double, viewed: Boolean) {
+            val radius = (JBUI.scale(5) * viewport.zoom).coerceAtLeast(2.0)
+            val size = radius * 2
+            g.color = if (viewed) accentColor else UIUtil.getContextHelpForeground()
+            g.stroke = BasicStroke(viewport.zoom.toFloat().coerceAtLeast(1f))
+            g.draw(RoundRectangle2D.Double(x - radius, y - radius, size, size, radius * 0.4, radius * 0.4))
+            if (viewed) {
+                g.draw(Path2D.Double().apply {
+                    moveTo(x - radius * 0.55, y)
+                    lineTo(x - radius * 0.13, y + radius * 0.4)
+                    lineTo(x + radius * 0.6, y - radius * 0.4)
+                })
+            }
         }
 
         /** An eye: preview this row's source or diff. Filled while pinned, accented while shown. */

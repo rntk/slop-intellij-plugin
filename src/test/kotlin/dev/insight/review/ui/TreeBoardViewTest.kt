@@ -10,6 +10,7 @@ import dev.insight.diff.ReviewFile
 import dev.insight.review.ReportTargetKind
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewedFiles
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.Summary
 import dev.insight.review.SummaryKind
@@ -22,6 +23,7 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JLabel
 import javax.swing.JScrollPane
@@ -33,10 +35,89 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 
 class TreeBoardViewTest : BasePlatformTestCase() {
+    fun testSummaryReviewControlRefreshesFilteredChartsTree() {
+        val files = listOf(CodeFile("src/a.kt", "/repo/src/a.kt", "a\n"), CodeFile("src/b.kt", "/repo/src/b.kt", "b\n"))
+        val tree = buildSummaryTree(files)
+        val summaries = ReviewSummaries(tree, tree.nodes.associate { it.id to "Summary for ${it.path}" })
+        val marks = ReviewedFiles().apply { restore(files) }
+        val canvas = NoteCanvas({}, {}, reviewed = marks).apply { setSize(1200, 800) }
+        try {
+            canvas.showNotes(CanvasState(summaries = SummariesCard(summaries, false, true), charts = ChartsCard(summaries)))
+            fun components() = descendants(canvas)
+            components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }.selectedItem = "Tree"
+            val board = components().filterIsInstance<TreeBoardPanel>().single()
+            val toggle = components().filterIsInstance<PillToggleButton>().single { it.name == "charts-tree-show-only-unviewed" }
+            toggle.doClick()
+            val check = components().filterIsInstance<JCheckBox>().single { it.name == "reviewed:file:src/a.kt" }
+            check.doClick()
+            assertEquals(listOf("src", "src/b.kt"), board.board.nodes.map { it.entry.path })
+            check.doClick()
+            assertEquals(listOf("src", "src/a.kt", "src/b.kt"), board.board.nodes.map { it.entry.path })
+        } finally { canvas.dispose() }
+    }
+
+    fun testViewedActionsAndUnviewedFilterTrackLiveMarks() {
+        val files = listOf(
+            CodeFile("src/a.kt", "/repo/src/a.kt", "a\n"),
+            CodeFile("src/b.kt", "/repo/src/b.kt", "b\n"),
+            CodeFile("docs/c.kt", "/repo/docs/c.kt", "c\n"),
+        )
+        val reviewed = ReviewedFiles().apply { restore(files) }
+        val changes = mutableListOf<Pair<List<String>, Boolean>>()
+        lateinit var panel: TreeBoardPanel
+        panel = TreeBoardPanel(
+            ReviewLineChart(buildSummaryTree(files)), "Project", {},
+            reviewed = reviewed,
+            markViewed = { paths, value ->
+                changes += paths to value
+                reviewed.set(paths, value)
+                panel.refreshViewed()
+            },
+        )
+        panel.setSize(900, 600)
+        layoutTree(panel)
+        fun paths() = panel.board.nodes.map { it.entry.path }
+        fun clickViewed(path: String) {
+            val row = checkNotNull(panel.rowScreenBounds(path))
+            panel.canvas.dispatchEvent(MouseEvent(panel.canvas, MouseEvent.MOUSE_MOVED, 0, 0,
+                row.centerX.toInt(), row.centerY.toInt(), 0, false))
+            val button = checkNotNull(panel.viewedButtonScreenBounds(path))
+            panel.canvas.dispatchEvent(MouseEvent(panel.canvas, MouseEvent.MOUSE_CLICKED, 0, 0,
+                button.centerX.toInt(), button.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+        }
+
+        panel.foldAll()
+        clickViewed("src")
+        assertEquals(setOf("src/a.kt", "src/b.kt"), changes.last().first.toSet())
+        assertTrue(changes.last().second)
+        assertTrue(reviewed.isReviewed("src/a.kt"))
+        assertTrue(reviewed.isReviewed("src/b.kt"))
+        clickViewed("src")
+        assertFalse(changes.last().second)
+        assertFalse(reviewed.isReviewed("src/a.kt"))
+        panel.unfoldAll()
+        clickViewed("src/a.kt")
+        assertEquals(listOf("src/a.kt") to true, changes.last())
+        assertTrue(reviewed.isReviewed("src/a.kt"))
+        val toggle = descendants(panel.controls).filterIsInstance<PillToggleButton>()
+            .single { it.name == "charts-tree-show-only-unviewed" }
+        toggle.doClick()
+        assertEquals(listOf("", "src", "src/b.kt", "docs", "docs/c.kt"), paths())
+        reviewed.set(listOf("src/b.kt"), true)
+        panel.refreshViewed()
+        assertEquals(listOf("", "docs", "docs/c.kt"), paths())
+        reviewed.set(listOf("src/a.kt"), false)
+        panel.refreshViewed()
+        assertEquals(listOf("", "src", "src/a.kt", "docs", "docs/c.kt"), paths())
+        toggle.doClick()
+        assertEquals(listOf("", "src", "src/a.kt", "src/b.kt", "docs", "docs/c.kt"), paths())
+    }
+
     fun testTreeToolbarKeepsSearchAndBoardControlsOnOneRow() {
         val file = CodeFile("a.kt", "/repo/a.kt", "one\n")
         val scope = CoroutineScope(SupervisorJob())
-        val builder = ChartsCanvasCard(ReviewVocabulary.CODE, {}, {}, search = ChartSearchActions(scope) { error("Unused") })
+        val builder = ChartsCanvasCard(ReviewVocabulary.CODE, {}, {}, search = ChartSearchActions(scope) { error("Unused") },
+            reviewed = ReviewedFiles().apply { restore(listOf(file)) })
         try {
             builder.view.chart = "Tree"
             builder.view.searchStatus = "The search failed. ${"Long message. ".repeat(20)}"
@@ -48,7 +129,8 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             val tabs = component("charts-lines-metric-tabs").let { SwingUtilities.convertRectangle(it.parent, it.bounds, card) }
             val toolbar = component("charts-controls")
             val controls = listOf("charts-type-selector", "charts-tree-source-preview-toggle",
-                "charts-tree-unfold-all", "charts-tree-fold-all", "charts-search-field", "charts-search-send").map(::component)
+                "charts-tree-unfold-all", "charts-tree-fold-all", "charts-tree-show-only-unviewed",
+                "charts-search-field", "charts-search-send").map(::component)
             val bounds = controls.map { SwingUtilities.convertRectangle(it.parent, it.bounds, card) }
 
             assertTrue(bounds.all { it.width > 0 && it.x >= 0 && it.maxX <= card.width && it.maxY <= tabs.y })
@@ -87,7 +169,8 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             CodeFile("readme.md", "/repo/readme.md", "six\n"),
         )
         val opened = mutableListOf<String>()
-        val canvas = NoteCanvas({ opened += it }, {}, vocabulary = ReviewVocabulary.CODE).apply { setSize(1600, 900) }
+        val canvas = NoteCanvas({ opened += it }, {}, vocabulary = ReviewVocabulary.CODE,
+            reviewed = ReviewedFiles().apply { restore(files) }).apply { setSize(1600, 900) }
         fun components() = descendants(canvas)
         fun selector() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }
         fun tabs() = components().filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }
@@ -120,7 +203,7 @@ class TreeBoardViewTest : BasePlatformTestCase() {
             assertTrue(components().filterIsInstance<JLabel>().single { it.name == "charts-tree-status" }.text.contains("src/nested/b.kt"))
 
             // Double-click opens a file.
-            panel.canvas.dispatchEvent(MouseEvent(panel.canvas, MouseEvent.MOUSE_CLICKED, 0, 0, bBounds.centerX.toInt(), bBounds.centerY.toInt(), 2, false, MouseEvent.BUTTON1))
+            panel.canvas.dispatchEvent(MouseEvent(panel.canvas, MouseEvent.MOUSE_CLICKED, 0, 0, bBounds.x + JBUI.scale(3), bBounds.centerY.toInt(), 2, false, MouseEvent.BUTTON1))
             assertEquals(listOf("src/nested/b.kt"), opened)
 
             // Clicking chevron folds and unfolds directory; Fold all / Unfold all also work.

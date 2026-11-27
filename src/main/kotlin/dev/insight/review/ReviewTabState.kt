@@ -30,7 +30,10 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     private val disk = ReviewCacheSession(cache, mode, paths)
     val reviewed = ReviewedFiles()
     fun setReviewed(node: SummaryNode, value: Boolean) {
-        val keys = reviewed.set(node.files, value)
+        setReviewedPaths(node.files, value)
+    }
+    fun setReviewedPaths(paths: List<String>, value: Boolean) {
+        val keys = reviewed.set(paths, value)
         disk.saveReviewed(keys, value)
     }
     /** The grouping reading tree: a topic tree under its own root, so a focus can tell which of the two trees it came from. */

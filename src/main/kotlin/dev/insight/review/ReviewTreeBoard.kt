@@ -90,19 +90,23 @@ internal class ReviewTreeBoard(
     collapsed: Set<String> = emptySet(),
     private val visibleFiles: Set<String>? = null,
     private val fileOrder: Map<String, Int> = emptyMap(),
+    private val summarizeFilteredFiles: Boolean = false,
 ) {
     val nodes: List<TreeBoardNode>
     private val indexByPath: Map<String, Int>
     private val filteredChildren: Map<String, List<ReviewLineChart.Entry>>? = visibleFiles?.let { allowed ->
         val kept = HashMap<String, List<ReviewLineChart.Entry>>()
-        fun filterDir(entry: ReviewLineChart.Entry): Boolean {
-            if (entry.kind == ReviewLineChart.Kind.FILE) return entry.path in allowed
-            if (!entry.directory) return false
-            val children = chart.children(entry).filter {
-                (it.kind == ReviewLineChart.Kind.DIRECTORY || it.kind == ReviewLineChart.Kind.FILE) && filterDir(it)
+        fun filterDir(entry: ReviewLineChart.Entry): ReviewLineChart.Entry? {
+            if (entry.kind == ReviewLineChart.Kind.FILE) return entry.takeIf { it.path in allowed }
+            if (!entry.directory) return null
+            val children = chart.children(entry).mapNotNull(::filterDir)
+            val directory = if (summarizeFilteredFiles) {
+                entry.copy(value = children.sumOf { it.value }, files = children.sumOf { it.files })
+            } else {
+                entry
             }
             if (children.isNotEmpty()) kept[entry.path] = children
-            return children.isNotEmpty()
+            return directory.takeIf { children.isNotEmpty() }
         }
         filterDir(chart.root)
         kept
@@ -147,8 +151,14 @@ internal class ReviewTreeBoard(
             }
         }
 
+        val root = if (summarizeFilteredFiles && filteredChildren != null) {
+            val children = childEntries(chart.root)
+            chart.root.copy(value = children.sumOf { it.value }, files = children.sumOf { it.files })
+        } else {
+            chart.root
+        }
         visit(
-            entry = chart.root,
+            entry = root,
             depth = 0,
             parentIndex = null,
             isLastChild = true,

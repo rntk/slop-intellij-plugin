@@ -220,7 +220,7 @@ internal class CodeReviewTab(
             summarize = { summarize() },
             contextSummaryActions = contextSummaryActions,
             removeSummaries = ::closeSummaryPage,
-            markReviewed = state::setReviewed,
+            markReviewed = state::setReviewedPaths,
             contextSummaries = summaryLauncher,
             deleteOriginalSummaries = ::clearOriginalSummaries,
             openNode = { node -> openFile(node.path, node.lines?.first) },
