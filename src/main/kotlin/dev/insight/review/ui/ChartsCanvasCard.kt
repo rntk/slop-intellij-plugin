@@ -35,6 +35,7 @@ import dev.insight.review.RadarChart
 import dev.insight.review.RadarSeries
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
+import dev.insight.review.ReviewSummarySnapshot
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
@@ -50,6 +51,7 @@ import dev.insight.review.TreeRailMode
 import dev.insight.review.briefTreeLinks
 import dev.insight.review.buildTreeRailModel
 import dev.insight.review.collectRelatedFiles
+import dev.insight.review.oneLineBrief
 import dev.insight.review.summaryRadar
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
@@ -78,6 +80,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -94,6 +98,8 @@ internal data class ChartsCard(
     val groupingSummaries: ReviewSummaries? = null,
 ) {
     val tree get() = summaries.tree
+    val summarySnapshot: ReviewSummarySnapshot
+        get() = ReviewSummarySnapshot(summaries, running = false, canGenerate = canGenerateSummaries, pendingIds = pendingEntries)
     val connectionSources by lazy {
         tree.nodes.asSequence().filter { it.kind == SummaryKind.FILE }.mapNotNull { it.file }
             .associate { it.path to it.absolutePath }
@@ -196,11 +202,13 @@ internal class ChartsCanvasCard(
     private var treeFocusSelection: TreeFocusSelection? = null
     private var treeBriefJob: Job? = null
     private var treeBriefs: TreeBriefs? = null
+    private val chartsContent = MutableStateFlow<ChartsCard?>(null)
     private var currentTreeBoard: TreeBoardPanel? = null
     /** The review revision of the last built card; a search of another revision is stale. */
     private var searchRevision = 0
 
     fun update(content: ChartsCard?) {
+        chartsContent.value = content
         if (content == null) {
             resetTreeConnections()
             currentTreeBoard?.releasePreviews()
@@ -305,26 +313,8 @@ internal class ChartsCanvasCard(
                 treeConnectionIndex = TreeFileConnectionIndex(project, sources, treeConnectionScope)
             }
         }
-        val fileSummaries = if (tree) {
-            content.tree.nodes.asSequence()
-                .filter { it.kind == SummaryKind.FILE && !it.isTopicBranch }
-                .mapNotNull { node -> content.summaries.text(node.id)?.let { node.path to it } }
-                .toMap()
-        } else emptyMap()
-        val nodeSummaries = if (tree) {
-            val readingSummaries = content.summaries.withAbsorbedFolderSummary()
-            buildMap {
-                for (node in content.tree.nodes) {
-                    if ((node.kind == SummaryKind.FILE || node.kind == SummaryKind.DIRECTORY || node.kind == SummaryKind.ROOT) && !node.isTopicBranch) {
-                        readingSummaries.text(node.id)?.let { put(node.path, it) }
-                    }
-                }
-                val prefix = content.tree.rootDirectoryPrefix
-                if (prefix.isNotEmpty() && prefix !in this) {
-                    readingSummaries.text(content.tree.root.id)?.let { put(prefix, it) }
-                }
-            }
-        } else emptyMap()
+        val fileSummaries = if (tree) content.summaries.fileTexts else emptyMap()
+        val nodeSummaries = if (tree) content.summaries.nodeTexts else emptyMap()
         val treeContextSources = if (tree) {
             content.tree.nodes.asSequence()
                 .mapNotNull { if (it.kind == SummaryKind.FILE) it.file else null }
@@ -510,9 +500,7 @@ internal class ChartsCanvasCard(
                     symbolSummaryPreview(source, "${symbol.name} · ${file.path}:${symbol.lines.first}", symbolSummaries)
                 } else null
             } else {
-                val node = content.tree.scopeNode(selection.path, SummaryKind.FILE)
-                    ?: content.tree.scopeNode(selection.path, SummaryKind.DIRECTORY)
-                node?.let { summaryPreview(it, content) }
+                content.tree.scopeNode(selection.path)?.let { summaryPreview(it, content) }
             }
         }
         val scopedChart = activePreview?.let { selection ->
@@ -681,16 +669,7 @@ internal class ChartsCanvasCard(
                     showTreeBriefs(null)
                     return@launch
                 }
-                val briefer = try {
-                    withContext(Dispatchers.IO) { newBriefer() }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    if (e is ControlFlowException) throw e
-                    logger<ChartsCanvasCard>().warn("Could not create the model client for Tree briefs", e)
-                    showTreeBriefs(TreeBriefs.pending(path, connections).failedAll())
-                    return@launch
-                }
+                val briefer by lazy(newBriefer)
                 // Brief only the links drawn on the board; files hidden by folds or the current tab have no arrow to label.
                 val drawn = currentTreeBoard?.board?.let { board ->
                     (connections.incoming.keys + connections.outgoing.keys).filterTo(HashSet()) { board.indexOf(it) >= 0 }
@@ -699,10 +678,7 @@ internal class ChartsCanvasCard(
                     briefTreeLinks(
                         path, connections,
                         linked = { drawn == null || it in drawn },
-                        briefFile = { file ->
-                            connections.brief ?: withContext(Dispatchers.IO) { briefer.file(projectPath(hierarchy, file)) }
-                                .also { connections.brief = it }
-                        },
+                        briefFile = ::fileSummaryBrief,
                         briefLink = { from, to, site ->
                             site.brief ?: withContext(Dispatchers.IO) {
                                 briefer.link(projectPath(hierarchy, from), projectPath(hierarchy, to), site)
@@ -735,6 +711,28 @@ internal class ChartsCanvasCard(
     private fun showTreeBriefs(briefs: TreeBriefs?) {
         treeBriefs = briefs
         currentTreeBoard?.briefs = briefs
+    }
+
+    /** Uses the ordinary review fill so other views receive the full summary, including its source references. */
+    private suspend fun fileSummaryBrief(path: String): String? {
+        val content = chartsContent.value ?: return null
+        content.summaries.fileTexts[path]?.let { return oneLineBrief(it) }
+        val node = content.tree.scopeNode(path, SummaryKind.FILE) ?: return null
+        val cancelFill = if (node.id in content.pendingEntries) null else {
+            val actions = summaryActions ?: return null
+            if (!content.canGenerateSummaries || !actions.available(path, SummaryKind.FILE)) return null
+            actions.generateOwned(path, SummaryKind.FILE)
+        }
+        val updated = try {
+            chartsContent.first {
+                it == null || it.revision != content.revision || node.id !in it.pendingEntries || path in it.summaries.fileTexts
+            }
+        } catch (e: CancellationException) {
+            cancelFill?.invoke()
+            throw e
+        }
+        if (updated == null || updated.revision != content.revision) return null
+        return updated.summaries.fileTexts[path]?.let { oneLineBrief(it) }
     }
 
     /** The project-relative path the model's file tools understand for a review [path]. */
@@ -964,15 +962,12 @@ internal class ChartsCanvasCard(
                     "Size summary words by their importance in the child summaries or file source") {
                     view.linesTagsCloud = it
                 }, BorderLayout.EAST)
-            } else if (summaryActions != null) {
-                val pending = node.id in content.pendingEntries
-                add(JButton(if (pending) "Summarizing…" else "Summarize").apply {
+            } else summaryEntryFill(content.summarySnapshot, node, summaryActions)?.let { fill ->
+                add(JButton(fill.label).apply {
                     name = "charts-lines-generate-summary"
-                    isEnabled = !pending && content.canGenerateSummaries && summaryActions.available(node.path, node.kind)
+                    isEnabled = fill.enabled
                     toolTipText = "Generate a summary for ${node.location}"
-                    addActionListener {
-                        if (summaryActions.available(node.path, node.kind)) summaryActions.generate(node.path, node.kind)
-                    }
+                    addActionListener { fill.run() }
                 }, BorderLayout.EAST)
             }
         }, BorderLayout.NORTH)

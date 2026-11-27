@@ -5,6 +5,7 @@ import dev.insight.context.ContextSummaryActions
 import dev.insight.review.CanvasTabKey
 import dev.insight.review.PatchSource
 import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummarySnapshot
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
@@ -24,12 +25,28 @@ internal data class SummariesCard(
     val pendingEntries: Set<Int> = emptySet(),
     val pages: Set<CanvasTabKey.SummaryPage> = setOf(CanvasTabKey.Summaries),
 ) {
-    val reading: ReviewSummaries by lazy { summaries.withAbsorbedFolderSummary() }
+    val reading: ReviewSummaries get() = summaries.reading
+    val summarySnapshot: ReviewSummarySnapshot
+        get() = ReviewSummarySnapshot(summaries, running, canGenerate = true, pendingIds = pendingEntries)
 }
 
 /** An action scoped to the original summaries of one review entry. */
 internal class SummaryEntryFill(val pending: Boolean, val enabled: Boolean, val run: () -> Unit) {
     val label get() = if (pending) "Summarizing…" else "Summarize"
+}
+
+/** Builds an entry fill action for [node] from [snapshot] and [actions], or null when already summarized or unfillable. */
+internal fun summaryEntryFill(
+    snapshot: ReviewSummarySnapshot,
+    node: SummaryNode,
+    actions: ContextSummaryActions?,
+): SummaryEntryFill? {
+    if (actions == null) return null
+    val target = snapshot.fillTarget(node) ?: return null
+    val pending = snapshot.isPending(target)
+    return SummaryEntryFill(pending, !pending && snapshot.canGenerate && actions.available(target.path, target.kind)) {
+        if (actions.available(target.path, target.kind)) actions.generate(target.path, target.kind)
+    }
 }
 
 /** Summary prose is slightly larger than the surrounding labels, at every zoom level. */

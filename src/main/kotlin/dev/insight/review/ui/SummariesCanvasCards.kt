@@ -526,19 +526,8 @@ internal class SummariesCanvasCards(
         startContextSummaries(tab, resummaryRequest(current, node, recursive, instructions))
     }
 
-    private fun fillEntry(card: SummariesCard, node: SummaryNode, actions: ContextSummaryActions): SummaryEntryFill? {
-        val reading = card.summaries
-        if (node.isTopicBranch || node.files.isEmpty() || reading.text(node.id) != null) return null
-        val target = when (node.kind) {
-            SummaryKind.FILE, SummaryKind.DIRECTORY -> node
-            SummaryKind.ROOT -> reading.tree.scopeNode(reading.tree.rootDirectoryPrefix, SummaryKind.DIRECTORY) ?: return null
-            else -> return null
-        }
-        val pending = card.running || target.id in card.pendingEntries
-        return SummaryEntryFill(pending, !pending && actions.available(target.path, target.kind)) {
-            if (actions.available(target.path, target.kind)) actions.generate(target.path, target.kind)
-        }
-    }
+    private fun fillEntry(card: SummariesCard, node: SummaryNode, actions: ContextSummaryActions): SummaryEntryFill? =
+        summaryEntryFill(card.summarySnapshot, node, actions)
 
     private fun startContextSummaries(tab: SummariesTab, explicit: ContextSummaryRequest? = null) {
         val current = storedSummaries(tab) ?: return

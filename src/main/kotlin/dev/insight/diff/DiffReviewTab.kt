@@ -39,7 +39,6 @@ import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ReviewCodeNavigation
 import dev.insight.review.ReviewNote
 import dev.insight.review.CapturedReviewContext
-import dev.insight.review.ReviewContextChange
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.SummaryKind
 import dev.insight.review.GROUPING_SUMMARIES_MISSING
@@ -57,7 +56,6 @@ import java.awt.BorderLayout
 import java.awt.Dimension
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.Timer
 import kotlinx.coroutines.*
 import dev.insight.review.ui.CanvasState
 import dev.insight.review.ui.NOTES_CHANGED
@@ -122,8 +120,6 @@ internal class DiffReviewTab(
 ) : ReviewTab<ReviewFile, DiffReviewState>(project, DiffReviewState(paths, ReviewDiskCache.forProject(project)), focus,
     ReviewVocabulary.DIFF) {
     private val sourcePoints = SourcePoints(project, "Diff chat")
-    /** Coalesces canvas updates while a run saves summaries: the first save starts it, and it renders the latest state. */
-    private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
     private val openDirectoryDiff: (List<ReviewFile>) -> Unit = { files -> showDirectoryDiff(project, files) }
     /**
      * The Diffs wall's chats about single files, and under [WALL_CANVAS_CHAT] its own chat about all its diffs, kept for the
@@ -169,7 +165,7 @@ internal class DiffReviewTab(
     protected override val summaryLauncher = ReviewContextSummaryLauncher(project, scope) {
         val context = captureContext()
         val files = state.snapshot.files
-        val rawComplete = this@DiffReviewTab.complete ?: ChatSettings.getInstance().createClient()::complete
+        val rawComplete = this@DiffReviewTab.complete ?: withContext(Dispatchers.IO) { ChatSettings.getInstance().createClient()::complete }
         val complete = tracedFileCompletion(files.map { TraceFile(it.path, patch = it.patch, before = it.before, after = it.after) }, rawComplete)
         diffSummarizer(complete, diffReviewTools(context).single { it.definition.name == "read_diff_files" }, maxContextChars = configuredContextChars())
     }
@@ -410,7 +406,7 @@ internal class DiffReviewTab(
                 val budget = configuredChatBudget(ChatProfile.FOCUSED)
                 val file = state.snapshot.files.firstOrNull { it.path == path }
                 if (file != null) {
-                    captureContext() to wallChatPrompt(file, fileSummaryTexts()[path], comparison, budget.pinnedChars)
+                    captureContext() to wallChatPrompt(file, state.summaries.fileTexts[path], comparison, budget.pinnedChars)
                 } else {
                     val vf = findReportSourceFile(project, path, null)
                         ?.takeIf { it.isValid && !it.isDirectory && !it.fileType.isBinary && it.length <= MAX_ADDED_FILE_BYTES }
@@ -737,26 +733,16 @@ internal class DiffReviewTab(
             (paths?.sorted()?.joinToString("\n") ?: "Follows all files in the selected diff.")
     }
 
-    /** The summary text of each changed file that has one, by path, for the Diffs wall. */
-    private fun fileSummaryTexts(): Map<String, String> = state.summaries.let { summaries ->
-        summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }
-            .mapNotNull { node -> summaries.text(node.id)?.takeIf { it.isNotBlank() }?.let { node.path to it } }.toMap()
-    }
-
-    /** Saves during a run redraw the cards at most every [CANVAS_REFRESH_MS]; the timer renders the last save too. */
-    override fun scheduleCanvasRefresh() { if (!disposed && !canvasTimer.isRunning) canvasTimer.start() }
-
     override fun summariesChanged() {
-        canvasTimer.stop()
         super.summariesChanged()
-        diffCards.updateWallSummaries(fileSummaryTexts(), scopedSummaryFill.pendingFiles)
+        diffCards.updateWallSummaries(state.summaries.fileTexts, scopedSummaryFill.pendingFiles)
     }
 
     override fun renderCanvas() {
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files,
             semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
-            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, fileSummaryTexts(), scopedSummaryFill.pendingFiles) },
+            wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, state.summaries.fileTexts, scopedSummaryFill.pendingFiles) },
             walkthrough = walkthroughContent())
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(), topicsCard(), explanation = explanations.result, grouping = groupingCard(),
             charts = chartsCard(), reportViewer = reportViewerCard()))
@@ -777,19 +763,7 @@ internal class DiffReviewTab(
         val live = this@DiffReviewTab.state
         fun file(path: String) = snapshot.files.firstOrNull { it.path == path } ?: throw ToolInputException(
             "$path has no diff in this snapshot. Use read_file or point_to_code for current project context.")
-        return object : CapturedReviewContext<ReviewFile>(live, capturedRevision, { disposed }, { change ->
-            when (change) {
-                ReviewContextChange.SOURCE -> renderCanvas()
-                ReviewContextChange.SUMMARIES_STARTED -> { scopedSummaryFill.cancel(); renderCanvas() }
-                ReviewContextChange.TOPICS_STARTED -> canvas.updateTopics(topicsCard())
-                ReviewContextChange.GROUPING_STARTED -> canvas.updateGrouping(groupingCard())
-                ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.GROUPING_SUMMARIES_STARTED -> {
-                    scopedSummaryFill.cancel()
-                    summariesChanged()
-                }
-                ReviewContextChange.SUMMARIES_SAVED, ReviewContextChange.TOPIC_ASSIGNED, ReviewContextChange.GROUPING_ASSIGNED -> scheduleCanvasRefresh()
-            }
-        }), DiffReviewContext {
+        return object : CapturedReviewContext<ReviewFile>(live, capturedRevision, { disposed }, ::handleContextChange), DiffReviewContext {
             override suspend fun pointToCode(point: SourcePoint): String = withContext(Dispatchers.EDT) {
                 current()
                 val sourceFile = snapshot.files.firstOrNull { it.path == point.path }
@@ -856,13 +830,11 @@ internal class DiffReviewTab(
     override fun clearSnapshot() = state.update(ReviewSnapshot(emptyList(), emptyList()))
 
     override fun dispose() {
-        canvasTimer.stop()
         fullFileSnapshots.clear()
         super.dispose()
     }
 
     internal companion object {
-        const val CANVAS_REFRESH_MS = 250
         // Small diffs arrive with the question, so an answer often needs no read calls at all.
         const val ALL_CHANGES = "All changes"
     }

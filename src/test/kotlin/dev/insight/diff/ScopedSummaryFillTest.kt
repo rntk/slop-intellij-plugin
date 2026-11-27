@@ -27,6 +27,7 @@ class ScopedSummaryFillTest {
 
     private class Launcher : ContextSummaryLauncher {
         val requests = mutableListOf<ContextSummaryRequest>()
+        val jobs = mutableListOf<Job>()
         var failOnLaunch = false
         private class Run(val start: ReviewSummaries, val request: ContextSummaryRequest,
                           val updated: (ReviewSummaries) -> Unit, val done: (Result<ReviewSummaryRun>) -> Unit)
@@ -36,7 +37,7 @@ class ScopedSummaryFillTest {
             check(!failOnLaunch) { "Could not start the model" }
             requests += request
             pending += Run(start, request, updated, done)
-            return Job()
+            return Job().also { jobs += it }
         }
         /** Writes every requested entry, as the summary pipeline would. */
         fun finish(writeIds: Set<Int>? = null) {
@@ -175,6 +176,61 @@ class ScopedSummaryFillTest {
         assertEquals(0, summaries.count)
         assertEquals(1, launcher.requests.size)
         assertTrue(fill.request("docs/c.md", SummaryKind.FILE))
+    }
+
+    @Test
+    fun cancellingOwnedRunPreservesQueuedFillsAndRejectsLateWrites() {
+        assertTrue(fill.request("docs/c.md", SummaryKind.FILE))
+        val cancel = checkNotNull(fill.requestOwned("app/a.kt", SummaryKind.FILE))
+        assertTrue(fill.request("app/b.kt", SummaryKind.FILE))
+        launcher.finish()
+        assertEquals(setOf(node("app/a.kt").id), launcher.requests.last().nodeIds)
+        cancel()
+
+        assertTrue(launcher.jobs[1].isCancelled)
+        assertFalse(launcher.jobs[2].isCancelled)
+        assertEquals(setOf("app/b.kt"), fill.pendingFiles)
+        launcher.finish()
+        assertNull(summaries.text(node("app/a.kt").id))
+        launcher.finish()
+        assertEquals("Generated app/b.kt", summaries.text(node("app/b.kt").id))
+        assertTrue(failures.isEmpty())
+
+        assertTrue(fill.request("app/a.kt", SummaryKind.FILE))
+        cancel()
+        assertFalse(launcher.jobs.last().isCancelled)
+    }
+
+    @Test
+    fun cancellingQueuedOwnedFillPreservesRunningAndQueuedOrdinaryFills() {
+        assertTrue(fill.request("app/a.kt", SummaryKind.FILE))
+        assertNull(fill.requestOwned("app/a.kt", SummaryKind.FILE))
+        val cancel = checkNotNull(fill.requestOwned("app/b.kt", SummaryKind.FILE))
+        assertTrue(fill.request("docs/c.md", SummaryKind.FILE))
+        assertNull(fill.requestOwned("docs/c.md", SummaryKind.FILE))
+        cancel()
+
+        assertFalse(launcher.jobs.single().isCancelled)
+        assertEquals(setOf("app/a.kt", "docs/c.md"), fill.pendingFiles)
+        launcher.finish()
+        assertEquals(setOf(node("docs/c.md").id), launcher.requests.last().nodeIds)
+        launcher.finish()
+        assertNull(summaries.text(node("app/b.kt").id))
+    }
+
+    @Test
+    fun coalescedOwnedFillLetsOrdinaryFolderRequestFinish() {
+        assertTrue(fill.request("docs/c.md", SummaryKind.FILE))
+        val cancel = checkNotNull(fill.requestOwned("app/b.kt", SummaryKind.FILE))
+        assertTrue(fill.request("app", SummaryKind.DIRECTORY))
+        launcher.finish()
+        cancel()
+
+        assertFalse(launcher.jobs.last().isCancelled)
+        assertEquals(setOf(node("app/a.kt").id, node("app/b.kt").id, node("app", SummaryKind.DIRECTORY).id),
+            launcher.requests.last().nodeIds)
+        launcher.finish()
+        assertEquals("Generated app/b.kt", summaries.text(node("app/b.kt").id))
     }
 
     @Test

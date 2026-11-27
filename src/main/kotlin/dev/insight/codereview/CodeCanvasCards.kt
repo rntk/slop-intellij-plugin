@@ -165,10 +165,14 @@ internal class CodeCanvasCards(
     }
 
     /** Gives the wall the latest file summaries without rebuilding the canvas; blocks keep their place and size. */
-    fun updateWallSummaries(summaries: Map<String, String>) {
+    fun updateWallSummaries(summaries: Map<String, String>, summarizing: Set<String> = emptySet()) {
         val current = wall ?: return
-        if (current.summaries == summaries) return
-        wall = current.copy(summaries = summaries).also(wallPage::show)
+        if (current.summaries == summaries && current.summarizing == summarizing) {
+            // Chat and review activity can change which blocks offer generation even when no prose changed.
+            if (wallView.isInitialized()) wallPage.card.repaint()
+            return
+        }
+        wall = current.copy(summaries = summaries, summarizing = summarizing).also(wallPage::show)
     }
 
     /** The most frequent words of the source in scope; a word opens its file, or a list of its files. */

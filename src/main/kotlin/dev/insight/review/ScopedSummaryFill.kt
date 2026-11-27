@@ -26,8 +26,10 @@ internal class ScopedSummaryFill(
 
     data class Failure(val targets: Set<Target>, val missingCount: Int, val reason: String)
 
-    private val queued = LinkedHashSet<Target>()
-    private var running: Set<Target> = emptySet()
+    private class Request(val target: Target, val owned: Boolean)
+
+    private val queued = LinkedHashSet<Request>()
+    private var running: Set<Request> = emptySet()
     private var runningFiles: Set<String> = emptySet()
     private var job: Job? = null
     /** Counts runs, so the late reports of a cancelled run are ignored. */
@@ -38,12 +40,24 @@ internal class ScopedSummaryFill(
     /** Missing file summaries being filled or waiting within the requested scopes. */
     val pendingFiles: Set<String> get() {
         val current = summaries()
-        return runningFiles + queued.flatMap { target -> missingFiles(current, current.tree.scopeNode(target.path, target.kind)) }
+        return runningFiles + queued.flatMap { request ->
+            val target = request.target
+            missingFiles(current, current.tree.scopeNode(target.path, target.kind))
+        }
+    }
+
+    /** Missing non-topic root, directory, and file node IDs currently pending or queued in [current]. */
+    fun pendingIds(current: ReviewSummaries = summaries()): Set<Int> {
+        if (!busy) return emptySet()
+        return current.tree.nodes.asSequence()
+            .filter { !it.isTopicBranch && (it.kind == SummaryKind.ROOT || it.kind == SummaryKind.DIRECTORY || it.kind == SummaryKind.FILE) }
+            .filter { current.text(it.id) == null && pending(it.path, it.kind) }
+            .mapTo(hashSetOf()) { it.id }
     }
 
     fun pending(path: String, kind: SummaryKind): Boolean {
         val target = target(path, kind)
-        return (running.any { it.includes(target) } || queued.any { it.includes(target) }) &&
+        return (running.any { it.target.includes(target) } || queued.any { it.target.includes(target) }) &&
             summaries().tree.scopeNode(target.path, target.kind) != null
     }
 
@@ -54,41 +68,71 @@ internal class ScopedSummaryFill(
         if (pending(path, kind)) return true
         if (!canFill(path, kind)) return false
         val target = target(path, kind)
-        queued.removeIf(target::includes)
-        queued += target
-        if (running.isEmpty()) resume() else changed()
+        queued.removeIf { target.includes(it.target) }
+        enqueue(Request(target, owned = false))
         return true
+    }
+
+    /** Returns an EDT cancellation callback when this request adds new work. */
+    fun requestOwned(path: String, kind: SummaryKind): (() -> Unit)? {
+        if (!canFill(path, kind)) return null
+        val request = Request(target(path, kind), owned = true)
+        enqueue(request)
+        return {
+            if (request in running) {
+                stopRunning()
+                changed()
+                resume()
+            } else if (queued.remove(request)) {
+                changed()
+            }
+        }
+    }
+
+    private fun enqueue(request: Request) {
+        queued += request
+        if (running.isEmpty()) resume() else changed()
     }
 
     /** Cancels the running fill and discards all requests from its review revision. */
     fun cancel() {
         if (!busy) return
-        runs++
         queued.clear()
-        job?.cancel()
+        stopRunning()
+        changed()
+    }
+
+    private fun stopRunning() {
+        runs++
+        val cancelled = job
         job = null
         running = emptySet()
         runningFiles = emptySet()
-        changed()
+        cancelled?.cancel()
     }
 
     /** Starts work waiting for another fill or for the review to become available. */
     fun resume() {
         if (running.isNotEmpty() || queued.isEmpty() || !canRun()) return
         val start = summaries()
-        val nodes = queued.mapNotNull { target -> missing(start, target)?.let { target to it } }.toMap()
-        queued.clear()
-        if (nodes.isEmpty()) {
+        val missingNodes = queued.mapNotNull { request -> missing(start, request.target)?.let { request to it } }.toMap()
+        queued.retainAll(missingNodes.keys)
+        val first = queued.firstOrNull()
+        if (first == null) {
             changed()
             return
         }
-        val ids = nodes.values.flatMapTo(linkedSetOf()) { fillSummaryRequest(start, it).nodeIds }
-        val targets = nodes.keys.toSet()
+        // An owned request gets its own job so it can be cancelled independently.
+        val requests = if (first.owned) setOf(first) else queued.takeWhile { !it.owned }.toSet()
+        queued.removeAll(requests)
+        val nodes = requests.map { missingNodes.getValue(it) }
+        val targets = requests.mapTo(linkedSetOf()) { it.target }
+        val ids = nodes.flatMapTo(linkedSetOf()) { fillSummaryRequest(start, it).nodeIds }
         val run = ++runs
-        running = targets
-        runningFiles = nodes.values.flatMapTo(linkedSetOf()) { missingFiles(start, it) }
+        running = requests
+        runningFiles = nodes.flatMapTo(linkedSetOf()) { missingFiles(start, it) }
         fun finish(result: Result<ReviewSummaryRun>) {
-            if (run != runs || running !== targets) return
+            if (run != runs || running !== requests) return
             job = null
             running = emptySet()
             runningFiles = emptySet()
@@ -111,20 +155,20 @@ internal class ScopedSummaryFill(
             changed()
             if (run != runs) return
             launcher.launch(start, request, updated = { updated ->
-                if (run == runs && running === targets) { save(updated, ids); changed() }
+                if (run == runs && running === requests) { save(updated, ids); changed() }
             }, done = ::finish)
         } catch (e: Exception) {
-            if (run != runs || running !== targets) throw e
+            if (run != runs || running !== requests) throw e
             finish(Result.failure(e))
             if (e is CancellationException) throw e
             return
         }
         // A launcher may report before it returns, and the next run may have started meanwhile.
-        if (run == runs && running === targets) job = launched else launched.cancel()
+        if (run == runs && running === requests) job = launched else launched.cancel()
     }
 
     private fun target(path: String, kind: SummaryKind): Target =
-        if (kind == SummaryKind.DIRECTORY && path.isEmpty()) Target(path, SummaryKind.ROOT) else Target(path, kind)
+        Target(path, normalizeSummaryKind(path, kind))
 
     private fun missing(summaries: ReviewSummaries, target: Target): SummaryNode? =
         summaries.tree.scopeNode(target.path, target.kind)?.takeIf { summaries.text(it.id) == null }

@@ -15,6 +15,7 @@ import dev.insight.review.ReportLink
 import dev.insight.review.ReportProjectIndex
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.SummaryKind
 import dev.insight.review.ui.findReportSourceFile
 import dev.insight.review.ui.matchingReviewSource
 import dev.insight.review.ui.openReportFile
@@ -191,12 +192,15 @@ internal class CodeWallView(
         highlighter = codeWallHighlighter(project, ::scopeFileFor, addedProjectFiles::get),
         openOnCanvas = null,
         onContext = project?.let { p -> { block, line, point -> showContext(p, block, line, point) } },
-        summarize = null,
+        summarize = summaryActions?.let { actions -> { path -> actions.generate(path, SummaryKind.FILE) } },
         cardWidthScale = 1.0,
         links = WallLinkSupport(
             project = project,
             coroutineScope = scope,
             linkHost = linkHost,
+            canSummarize = summaryActions?.let { actions ->
+                { path -> path !in addedProjectFiles && actions.available(path, SummaryKind.FILE) }
+            },
             onRemoveBlock = ::removeAdded,
         ),
         loadChunk = loadChunk,
@@ -274,6 +278,7 @@ internal class CodeWallView(
             scope = content.scope,
             blocks = emptyList(),
             summaries = content.summaries,
+            summarizing = content.summarizing,
             allPaths = allPaths,
             blockFor = ::blockForPath,
         )

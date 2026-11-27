@@ -4,9 +4,14 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ui.components.ActionLink
+import dev.insight.codereview.CodeFile
+import dev.insight.codereview.CodeWallContent
+import dev.insight.codereview.CodeWallView
+import dev.insight.context.ContextSummaryActions
 import dev.insight.diff.DIFFS_WALL_LABELS
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.wallBlock
+import dev.insight.review.SummaryKind
 import java.awt.Container
 import java.awt.Dimension
 import java.awt.Point
@@ -628,6 +633,57 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
             assertEquals(WALL_ACTIVE_SUMMARY_LIMIT, activeAtBottom.size)
             assertTrue("Bottom summary should be active after scrolling to bottom", blocks.last().path in activeAtBottom)
             assertFalse("Top off-screen summary should hibernate after scrolling to bottom", blocks.first().path in activeAtBottom)
+        } finally {
+            Disposer.dispose(wall)
+        }
+    }
+
+    fun testCodeWallViewRequestsAndShowsOnDemandSummary() {
+        val requested = mutableListOf<String>()
+        val files = listOf(CodeFile("src/A.kt", "/p/src/A.kt", "fun a() = 1\n"))
+        val scope = WallScope(null, "All files")
+        var available = false
+        lateinit var wall: CodeWallView
+        wall = CodeWallView(
+            openFile = { _, _ -> },
+            showAllFiles = {},
+            project = project,
+            summaryActions = ContextSummaryActions(
+                available = { path, kind -> available && path == "src/A.kt" && kind == SummaryKind.FILE },
+                generate = { path, kind ->
+                    assertEquals(SummaryKind.FILE, kind)
+                    available = false
+                    requested += path
+                    wall.show(CodeWallContent(scope, files, emptyMap(), setOf(path)))
+                    true
+                },
+            ),
+        )
+        try {
+            wall.show(CodeWallContent(scope, files))
+            val pane = JScrollPane(wall.card)
+            pane.setSize(1200, 800)
+            relayout(pane)
+            val surface = wall.view.blocks.first().parent as JComponent
+            assertTrue(wall.view.blocks.first().active)
+            val toggle = surface.actionMap.get(surface.inputMap.get(KeyStroke.getKeyStroke("S")))!!
+            assertFalse(toggle.isEnabled)
+            press(surface, "S")
+            assertTrue(requested.isEmpty())
+
+            available = true
+            assertTrue(toggle.isEnabled)
+            press(surface, "S")
+            assertEquals(listOf("src/A.kt"), requested)
+            assertTrue(wall.view.blocks.first().showsSummary)
+            assertTrue(toggle.isEnabled)
+
+            wall.show(CodeWallContent(scope, files, mapOf("src/A.kt" to "Returns 1.")))
+            assertTrue(wall.view.blocks.first().showsSummary)
+            press(surface, "S")
+            press(surface, "S")
+            assertTrue(wall.view.blocks.first().showsSummary)
+            assertEquals(listOf("src/A.kt"), requested)
         } finally {
             Disposer.dispose(wall)
         }

@@ -62,10 +62,7 @@ internal data class TreeConnectionSite(
     var brief: String? = null
 }
 
-internal data class TreeFileConnections(val incoming: Map<String, TreeConnectionSite>, val outgoing: Map<String, TreeConnectionSite>) {
-    /** Completed one-line file brief for this graph snapshot. Accessed on the EDT. */
-    var brief: String? = null
-}
+internal data class TreeFileConnections(val incoming: Map<String, TreeConnectionSite>, val outgoing: Map<String, TreeConnectionSite>)
 
 /** Files included in Tree Focus mode: the focused [targets], plus direct [incoming] and [outgoing] neighbors. */
 internal data class TreeFocusLinks(

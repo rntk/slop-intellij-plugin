@@ -38,12 +38,9 @@ class TreeLinkBriefsTest {
         assertTrue(user.contains("5| api.run()"))
     }
 
-    @Test fun `file brief names the file and blank replies fail`() = runBlocking {
-        var request: CompletionRequest? = null
-        assertEquals("Runs the service", TreeBriefer({ request = it; Completion("Runs the service") }, emptyList()).file("src/Api.kt"))
-        assertTrue(request!!.messages.last().content.contains("src/Api.kt"))
+    @Test fun `blank link replies fail`() = runBlocking {
         try {
-            TreeBriefer({ Completion(" - \n") }, emptyList()).file("src/Api.kt")
+            TreeBriefer({ Completion(" - \n") }, emptyList()).link("Client.kt", "Api.kt", TreeConnectionSite(1, 1))
             fail("Expected a protocol error")
         } catch (expected: LlmProtocolException) {
             assertTrue(expected.message!!.contains("empty"))

@@ -4,6 +4,10 @@ import dev.insight.agent.ToolInputException
 
 enum class SummaryKind(val id: String) { ROOT("root"), DIRECTORY("directory"), GROUP("group"), FILE("file"), CHUNK("chunk") }
 
+/** Maps an empty directory path to [SummaryKind.ROOT], leaving all other kinds unchanged. */
+internal fun normalizeSummaryKind(path: String, kind: SummaryKind): SummaryKind =
+    if (kind == SummaryKind.DIRECTORY && path.isEmpty()) SummaryKind.ROOT else kind
+
 /** One level of the summary tree. Code builds the structure from the reviewed paths; only the text is the model's. */
 data class SummaryNode(
     val id: Int,
@@ -52,8 +56,18 @@ class ReviewSummaryTree(val nodes: List<SummaryNode>) {
             .associateBy { it.path to it.kind }
     }
 
+    /** Non-topic file nodes in tree order. */
+    internal val fileNodes: List<SummaryNode> by lazy {
+        summarizable.filter { !it.isTopicBranch && it.kind == SummaryKind.FILE }
+    }
+
     /** The ordinary review summary node for the exact file or directory selected by a view. */
-    internal fun scopeNode(path: String, kind: SummaryKind): SummaryNode? = scopeNodes[path to kind]
+    internal fun scopeNode(path: String, kind: SummaryKind): SummaryNode? =
+        scopeNodes[path to normalizeSummaryKind(path, kind)]
+
+    /** Resolves a path to its file node, or else its directory/root node. */
+    internal fun scopeNode(path: String): SummaryNode? =
+        scopeNode(path, SummaryKind.FILE) ?: scopeNode(path, SummaryKind.DIRECTORY)
 
     /**
      * A folder whose only entry is another folder repeats that folder's summary. Views merge such a chain into one entry: the
@@ -235,6 +249,45 @@ class ReviewSummaries private constructor(
     fun summary(id: Int): Summary? = texts[id] ?: readingAliases[id]
     fun text(id: Int): String? = summary(id)?.text
     internal fun generatedSummary(id: Int): Summary? = texts[id].takeUnless { id in cachedIds }
+
+    /** Cached view that lets the root row read the absorbed folder it represents. */
+    internal val reading: ReviewSummaries by lazy { withAbsorbedFolderSummary() }
+
+    /** Non-blank file summary prose keyed by relative file path. */
+    internal val fileTexts: Map<String, String> by lazy {
+        tree.fileNodes.mapNotNull { node -> text(node.id)?.takeIf { it.isNotBlank() }?.let { node.path to it } }.toMap()
+    }
+
+    /** Summary prose for every non-topic file, directory, and root node, keyed by path (including absorbed root prefix). */
+    internal val nodeTexts: Map<String, String> by lazy {
+        if (tree.nodes.isEmpty()) return@lazy emptyMap()
+        val r = reading
+        buildMap {
+            for (node in tree.nodes) {
+                if ((node.kind == SummaryKind.FILE || node.kind == SummaryKind.DIRECTORY || node.kind == SummaryKind.ROOT) && !node.isTopicBranch) {
+                    r.text(node.id)?.let { put(node.path, it) }
+                }
+            }
+            val prefix = tree.rootDirectoryPrefix
+            if (prefix.isNotEmpty() && prefix !in this) {
+                r.text(tree.root.id)?.let { put(prefix, it) }
+            }
+        }
+    }
+
+    /** Summary text for the exact file or directory [path] and [kind], reading through absorbed folders. */
+    internal fun textFor(path: String, kind: SummaryKind): String? =
+        tree.scopeNode(path, kind)?.let { reading.text(it.id) }
+
+    /** The target node to fill for a missing file, directory, or absorbed root summary; null when unavailable or already summarized. */
+    internal fun fillTarget(node: SummaryNode): SummaryNode? {
+        if (node.isTopicBranch || node.files.isEmpty() || reading.text(node.id) != null) return null
+        return when (node.kind) {
+            SummaryKind.FILE, SummaryKind.DIRECTORY -> node
+            SummaryKind.ROOT -> tree.scopeNode(tree.rootDirectoryPrefix, SummaryKind.DIRECTORY)
+            else -> null
+        }
+    }
 
     /** Lets the root row read the folder it represents after that folder is filled on its own. */
     internal fun withAbsorbedFolderSummary(): ReviewSummaries {

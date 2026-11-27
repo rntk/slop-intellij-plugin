@@ -9,11 +9,16 @@ import dev.insight.review.wall.wallSourceLines
 
 /**
  * What the Code wall shows: [scope] names it and keeps its layout; [files] are its current snapshot files, in order; [summaries]
- * holds the summary text of the files that have one, by path.
+ * holds the summary text of the files that have one, by path; [summarizing] lists the paths currently being written.
  */
-internal data class CodeWallContent(val scope: WallScope, val files: List<CodeFile>, val summaries: Map<String, String> = emptyMap()) {
+internal data class CodeWallContent(
+    val scope: WallScope,
+    val files: List<CodeFile>,
+    val summaries: Map<String, String> = emptyMap(),
+    val summarizing: Set<String> = emptySet(),
+) {
     /** The wall's content: one source block per file. */
-    fun toWall(): WallContent = WallContent(scope, files.map { codeWallBlock(it) }, summaries)
+    fun toWall(): WallContent = WallContent(scope, files.map { codeWallBlock(it) }, summaries, summarizing)
 }
 
 /**

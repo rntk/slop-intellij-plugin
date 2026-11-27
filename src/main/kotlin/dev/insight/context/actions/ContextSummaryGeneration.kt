@@ -113,8 +113,7 @@ internal class ContextSummaryPreparation(private val project: Project, private v
 
 /** Opens the ordinary Summaries editor and reveals the requested file before filling its missing summary. */
 internal fun openContextSummaries(project: Project, tab: ReviewTab<*, *>?, path: String, kind: SummaryKind) {
-    val treeKind = if (kind == SummaryKind.DIRECTORY && path.isEmpty()) SummaryKind.ROOT else kind
-    val node = tab?.state?.summaries?.tree?.scopeNode(path, treeKind)
+    val node = tab?.state?.summaries?.tree?.scopeNode(path, kind)
     if (tab == null || node == null) {
         report(project, InsightBundle.message("context.summary.unavailable", path.ifEmpty { "." }))
         return

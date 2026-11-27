@@ -37,12 +37,10 @@ import dev.insight.review.reviewProgressTitle
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewNote
 import dev.insight.review.CapturedReviewContext
-import dev.insight.review.ReviewContextChange
 import dev.insight.review.ReviewSummarizer
 import dev.insight.review.ReviewSymbols
 import dev.insight.review.ReviewTopicGenerator
 import dev.insight.review.ReviewVocabulary
-import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.SymbolFile
 import dev.insight.review.TOPIC_SUMMARIES_MISSING
@@ -59,7 +57,6 @@ import java.awt.BorderLayout
 import java.awt.Dimension
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.Timer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -176,8 +173,9 @@ internal class CodeReviewTab(
     /** Uses the same source evidence and prompts as the review's /summaries command. */
     protected override val summaryLauncher = ReviewContextSummaryLauncher(project, scope) {
         val snapshot = state.snapshot
+        val rawComplete = this.complete ?: withContext(Dispatchers.IO) { ChatSettings.getInstance().createClient()::complete }
         val complete = tracedFileCompletion(snapshot.files.map { TraceFile(it.path, source = it.text) },
-            this.complete ?: ChatSettings.getInstance().createClient()::complete)
+            rawComplete)
         ReviewSummarizer(complete, null, CODE_SUMMARY_OPTIONS, CodeSummaryEvidence(snapshot), maxContextChars = configuredContextChars())
     }
 
@@ -293,9 +291,6 @@ internal class CodeReviewTab(
         }
     }
 
-    /** Coalesces canvas updates while a run saves summaries or topics. */
-    private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
-
     override val session = object : ChatSession(project, scope, backendFactory = { _ -> createBackend() },
         onClear = sourcePoints::clear, welcome = if (focus != null)
         "Ask about ${focus.label}. Its summaries and source are in this chat's context; other project files are read when a " +
@@ -375,7 +370,7 @@ internal class CodeReviewTab(
                     ?: findReportSourceFile(project, path, null)
                         ?.takeIf { it.isValid && !it.isDirectory && !it.fileType.isBinary && it.length <= MAX_ADDED_FILE_BYTES }
                         ?.let { vf -> readVirtualFileText(vf)?.let { text -> CodeFile(path, vf.path, text) } }
-                file?.let { Triple(captureContext(), it, fileSummaries()[path]) to scopeName }
+                file?.let { Triple(captureContext(), it, state.summaries.fileTexts[path]) to scopeName }
             } ?: return "$path is no longer in this review's scope, so there is no source to discuss."
             val (captured, scopeName) = turn
             val (context, file, summary) = captured
@@ -534,7 +529,7 @@ internal class CodeReviewTab(
     /** A pipeline run ended (EDT). Held updates apply once the chat is idle. */
     internal fun pipelineEnded() {
         pipelineRuns = (pipelineRuns - 1).coerceAtLeast(0)
-        canvasTimer.stop()
+        stopCanvasRefresh()
         if (!disposed) summariesChanged()
         if (!session.busy) applyHeld()
     }
@@ -588,16 +583,10 @@ internal class CodeReviewTab(
         return true
     }
 
-    /** The summary text of each file in scope that has one, by path, for the Code wall. */
-    private fun fileSummaries(): Map<String, String> = state.summaries.let { summaries ->
-        summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }
-            .mapNotNull { node -> summaries.text(node.id)?.takeIf { it.isNotBlank() }?.let { node.path to it } }.toMap()
-    }
-
     override fun summariesChanged() {
         super.summariesChanged()
         canvas.updateFileView(fileViewCard())
-        codeCards.updateWallSummaries(fileSummaries())
+        codeCards.updateWallSummaries(state.summaries.fileTexts, scopedSummaryFill.pendingFiles)
     }
 
     /** File view reads the topics and summaries of the files [fileStructure] reaches, so it follows them like the topics card. */
@@ -667,9 +656,6 @@ internal class CodeReviewTab(
         }
     }
 
-    /** Saves during a run redraw the cards at most every [CANVAS_REFRESH_MS]. */
-    override fun scheduleCanvasRefresh() { if (!disposed && !canvasTimer.isRunning) canvasTimer.start() }
-
     /**
      * The per-turn overview of a focused chat: only the focused files, with their notes and source blocks. Their source and
      * summaries are already pinned by [codeFocusPrompt]; the rest of the scope is left to the tools.
@@ -705,7 +691,7 @@ internal class CodeReviewTab(
         codeCards.words = if (state.wordsVisible) CodeWordsPage(wordCount?.words, wordScope, wordScopes,
             updating = wordCount?.counts(state.snapshot.files, wordScope) != true) else null
         codeCards.knowledge = if (state.knowledgeVisible) knowledge.content() else null
-        codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, fileSummaries()) }
+        codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, state.summaries.fileTexts, scopedSummaryFill.pendingFiles) }
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(), topics = topicsCard(), fileView = fileViewCard(),
             explanation = explanations.result, charts = chartsCard(), reportViewer = reportViewerCard()))
         canvas.highlight(selectedPaths().toSet())
@@ -728,19 +714,7 @@ internal class CodeReviewTab(
             stale = { path -> "$path changed since the code snapshot. Wait for the refresh, then retry or use a file note without symbol." },
             missing = { path -> "$path is not a file in this review's scope." },
             findTool = "find_code_symbols")
-        return object : CapturedReviewContext<CodeFile>(live, capturedRevision, { disposed }, { change ->
-            when (change) {
-                ReviewContextChange.SOURCE -> renderCanvas()
-                ReviewContextChange.SUMMARIES_STARTED -> { scopedSummaryFill.cancel(); renderCanvas() }
-                ReviewContextChange.TOPICS_STARTED -> canvas.updateTopics(topicsCard())
-                ReviewContextChange.GROUPING_STARTED -> canvas.updateGrouping(groupingCard())
-                ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.GROUPING_SUMMARIES_STARTED -> {
-                    scopedSummaryFill.cancel()
-                    summariesChanged()
-                }
-                ReviewContextChange.SUMMARIES_SAVED, ReviewContextChange.TOPIC_ASSIGNED, ReviewContextChange.GROUPING_ASSIGNED -> scheduleCanvasRefresh()
-            }
-        }), CodeReviewContext {
+        return object : CapturedReviewContext<CodeFile>(live, capturedRevision, { disposed }, ::handleContextChange), CodeReviewContext {
             override suspend fun pointToCode(point: dev.insight.agent.SourcePoint): String = withContext(Dispatchers.EDT) {
                 current()
                 if (point.side != null) throw ToolInputException("Code review has no diff sides")
@@ -801,7 +775,6 @@ internal class CodeReviewTab(
     override fun clearSnapshot() = state.update(CodeSnapshot.empty())
 
     override fun dispose() {
-        canvasTimer.stop()
         wordsJob?.cancel()
         holding = false
         pendingSnapshot = null
@@ -814,7 +787,6 @@ internal class CodeReviewTab(
     }
 
     internal companion object {
-        const val CANVAS_REFRESH_MS = 250
         const val ALL_FILES = "All files in scope"
     }
 }

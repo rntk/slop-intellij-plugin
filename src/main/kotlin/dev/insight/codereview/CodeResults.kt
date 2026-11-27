@@ -9,8 +9,8 @@ import dev.insight.review.ReviewSourceBlock
 import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.SummaryKind
-import dev.insight.review.SummaryNode
 import dev.insight.review.reviewJson
+import dev.insight.review.reviewSummariesJson
 import java.nio.file.FileSystems
 import java.nio.file.InvalidPathException
 import java.nio.file.PathMatcher
@@ -299,55 +299,21 @@ private fun regexFind(pattern: Pattern, line: String, query: String, checkCancel
  * One size-bounded page of the summary tree in pre-order, or of the subtree under [under]: a node's location, a file or folder
  * path. A path that names no node (inside a merged folder chain) pages the smallest node that holds all of its files.
  */
-internal fun codeSummariesJson(summaries: ReviewSummaries, offset: Int, under: String?): String {
-    val tree = summaries.tree
-    val top = under?.trim()?.takeIf { it.isNotEmpty() && it != "." && it != "./" }?.let { subtreeRoot(summaries, it) } ?: tree.root
-    val ids = mutableListOf<Int>()
-    fun visit(id: Int) { ids += id; tree[id].children.forEach(::visit) }
-    visit(top.id)
-    if (offset < 0 || offset > ids.size) throw ToolInputException("Offset is outside the node list")
-    val nodes = mutableListOf<Map<String, Any>>()
-    val summarized = ids.count { summaries.text(it) != null }
-    fun text(): String = reviewJson.toJson(buildMap {
-        put("evidence", "The tree comes from the folders and files in scope; large files are split into parts by line range. " +
-            "Summaries are model interpretation.")
-        if (top.id != tree.root.id) put("under", top.location)
-        put("totals", mapOf("nodes" to ids.size, "files" to top.files.size, "summarized" to summarized, "missing" to ids.size - summarized))
-        if (summaries.count == 0) put("note", "No summaries are written yet. Suggest /summaries to the user.")
-        put("nodes", nodes)
-        (offset + nodes.size).takeIf { it < ids.size }?.let { put("next_offset", it) }
-    })
-    for (id in ids.drop(offset)) {
-        nodes += summaryNodeJson(summaries, tree[id])
-        if (text().length > MAX_RESULT_CHARS) { nodes.removeAt(nodes.lastIndex); break }
-    }
-    if (nodes.isEmpty() && offset < ids.size) throw ToolInputException("Node metadata exceeds the result limit at offset $offset.")
-    return text()
-}
-
-private fun subtreeRoot(summaries: ReviewSummaries, under: String): SummaryNode {
-    val tree = summaries.tree
-    tree.nodes.firstOrNull { it.location == under }?.let { return it }
-    val path = under.trimEnd('/')
-    tree.nodes.firstOrNull { it.path == path && it.kind != SummaryKind.GROUP && it.kind != SummaryKind.CHUNK }?.let { return it }
-    val wanted = tree.root.files.filterTo(HashSet()) { it == path || it.startsWith("$path/") }
-    if (wanted.isEmpty()) throw ToolInputException("No summary node covers $under. Use a folder or file path from the tree, or omit path.")
-    var node = tree.root
-    while (true) {
-        node = node.children.map(tree::get).firstOrNull { child -> child.kind != SummaryKind.CHUNK && child.files.containsAll(wanted) } ?: return node
-    }
-}
-
-private fun summaryNodeJson(summaries: ReviewSummaries, node: SummaryNode): Map<String, Any> = buildMap {
-    put("id", node.id); put("kind", node.kind.id); put("location", node.location)
-    node.parent?.let { put("parent", it) }
-    if (node.kind == SummaryKind.FILE) node.file?.facts?.takeIf { it.isNotEmpty() }?.let { put("facts", it) }
-    node.lines?.let { put("lines", mapOf("start" to it.first, "end" to it.last)) }
+internal fun codeSummariesJson(summaries: ReviewSummaries, offset: Int, under: String?): String = reviewSummariesJson(
+    summaries = summaries,
+    offset = offset,
+    under = under,
+    evidence = "The tree comes from the folders and files in scope; large files are split into parts by line range. " +
+        "Summaries are model interpretation.",
+    noteWhenEmpty = "No summaries are written yet. Suggest /summaries to the user.",
+    maxChars = MAX_RESULT_CHARS,
+) { node, map ->
+    if (node.kind == SummaryKind.FILE) node.file?.facts?.takeIf { it.isNotEmpty() }?.let { map["facts"] = it }
+    node.lines?.let { map["lines"] = mapOf("start" to it.first, "end" to it.last) }
     if (node.children.isNotEmpty()) {
-        if (node.kind != SummaryKind.FILE && node.kind != SummaryKind.CHUNK) put("files", node.files.size)
-        put("children", node.children)
+        if (node.kind != SummaryKind.FILE && node.kind != SummaryKind.CHUNK) map["files"] = node.files.size
+        map["children"] = node.children
     }
-    summaries.text(node.id)?.let { put("summary", it) }
 }
 
 /** The exact current lines of a file in scope, as a canvas source block: at most 200 lines and 20000 characters. */

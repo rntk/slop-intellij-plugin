@@ -74,6 +74,11 @@ internal class ContextSummaryActions(
     val available: (String, SummaryKind) -> Boolean,
     val generate: (String, SummaryKind) -> Boolean,
     val matchesDiff: (ReviewFile) -> Boolean = { true },
+    /** Returns an EDT cancellation callback when the caller starts its own fill. */
+    val generateOwned: (String, SummaryKind) -> (() -> Unit)? = { path, kind ->
+        generate(path, kind)
+        null
+    },
 )
 
 /** A project file a picked text links to: [path] is project-relative, [lines] the 1-based range the link names, if any. */

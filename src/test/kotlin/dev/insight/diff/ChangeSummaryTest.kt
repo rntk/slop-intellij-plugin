@@ -206,6 +206,23 @@ class ChangeSummaryTest {
         assertEquals("+1 -1", first["nodes"].asJsonArray.single { it.asJsonObject["location"].asString == "c.kt" }.asJsonObject["lines"].asString)
     }
 
+    @Test fun `requesting the last diff summary page skips preceding entries`() {
+        val nodes = buildSummaryTree((1..100).map { file("src/File$it.kt") }).nodes
+        val reads = mutableSetOf<Int>()
+        val tracked = object : AbstractList<SummaryNode>() {
+            override val size get() = nodes.size
+            override fun get(index: Int): SummaryNode {
+                reads += index
+                return nodes[index]
+            }
+        }
+        val summaries = ReviewSummaries(ReviewSummaryTree(tracked))
+        val page = JsonParser.parseString(changeSummariesJson(summaries, nodes.lastIndex)).asJsonObject
+        assertEquals(nodes.lastIndex, page["nodes"].asJsonArray.single().asJsonObject["id"].asInt)
+        assertFalse(page.has("next_offset"))
+        assertEquals(setOf(0, nodes.lastIndex), reads)
+    }
+
     @Test fun targetedRegenerationSendsFullInstructionsEvenToSingleChildBranches() = runBlocking {
         val tree = buildSummaryTree(listOf(file("app/a.kt"), file("elsewhere/b.kt")))
         val original = ReviewSummaries(tree).summarize(tree.nodes.associate { it.id to "Original ${it.location}" })

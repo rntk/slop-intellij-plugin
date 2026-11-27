@@ -372,7 +372,7 @@ private fun buildDirectoryContextPick(
     dir?.let { data.put(ContextKeys.VIRTUAL_FILE, it) }
 
     if (scoped.isNotEmpty()) {
-        val dirNode = summaryTree?.scopeNode(path, if (path.isEmpty()) SummaryKind.ROOT else SummaryKind.DIRECTORY)
+        val dirNode = summaryTree?.scopeNode(path, SummaryKind.DIRECTORY)
         if (dirNode != null || summaryTree == null) {
             summaryActions?.let { data.put(ContextKeys.SUMMARY_GENERATION, it) }
         }

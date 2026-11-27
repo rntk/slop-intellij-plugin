@@ -10,11 +10,14 @@ import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
 import dev.insight.context.ContextKeys
+import dev.insight.context.ContextSummaryActions
 import dev.insight.graph.RelationKind
 import dev.insight.llm.Completion
 import dev.insight.review.ReviewLineChart
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.Summary
+import dev.insight.review.SummaryKind
 import dev.insight.review.TreeBrief
 import dev.insight.review.TreeBriefer
 import dev.insight.review.TreeBriefs
@@ -520,19 +523,36 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             requests.incrementAndGet()
             val input = request.messages.last().content
             Completion(when {
-                input.startsWith("File:") -> "Starts the service\nand creates models"
                 input.lineSequence().first().endsWith("Client.java") -> "calls `Api.run` to start at api/Api.java:L3"
                 else -> "- creates `Model` instances"
             })
         }, emptyList())
-        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE,
-            summaryActions = SummaryCanvasActions(treeBriefer = { briefer }))
+        val tree = buildSummaryTree(files)
+        val clientId = tree.scopeNode(client, SummaryKind.FILE)!!.id
+        val clientSummary = Summary.plain("Starts the API\nfor clients")
+        var summaries = ReviewSummaries(tree).summarize(mapOf(clientId to clientSummary))
+        var fills = 0
+        lateinit var canvas: NoteCanvas
+        val actions = ContextSummaryActions({ _, _ -> true }, { path, kind ->
+            assertEquals(api, path)
+            assertEquals(SummaryKind.FILE, kind)
+            fills++
+            val id = tree.scopeNode(path, kind)!!.id
+            canvas.updateCharts(ChartsCard(summaries, pendingEntries = setOf(id)))
+            javax.swing.SwingUtilities.invokeLater {
+                summaries = summaries.summarize(mapOf(id to Summary.plain("Starts the service\nand creates models")))
+                canvas.updateCharts(ChartsCard(summaries))
+            }
+            true
+        })
+        canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE,
+            summaryActions = SummaryCanvasActions(contextSummaryActions = actions, treeBriefer = { briefer }))
         fun panel() = descendants(canvas).filterIsInstance<TreeBoardPanel>().single()
         try {
             canvas.setSize(1200, 800)
-            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)))))
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(summaries)))
             descendants(canvas).filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }.selectedItem = "Tree"
-            val board = panel()
+            var board = panel()
             assertNull(board.briefButtonScreenBounds("api"))
             val button = checkNotNull(board.briefButtonScreenBounds(api))
             assertFalse(button.intersects(checkNotNull(board.connectionButtonScreenBounds(api))))
@@ -542,10 +562,12 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
                 button.centerX.toInt(), button.centerY.toInt(), 0, false)).orEmpty().contains("Summarize"))
             clickRowAction(board, button)
             PlatformTestUtil.waitWithEventsDispatching("Briefs should finish",
-                { board.briefs?.let { !it.running && it.total == 3 } == true }, 20)
+                { panel().briefs?.let { !it.running && it.total == 3 } == true }, 20)
+            board = panel()
             // Clicking briefs also shows the file's links, so the briefs explain what is drawn.
             assertEquals(api, board.connectionSelection?.path)
-            assertEquals(3, requests.get())
+            assertEquals(1, fills)
+            assertEquals(2, requests.get())
             val summarizedClientSite = checkNotNull(board.connectionSelection?.connections?.incoming?.get(client))
 
             val apiBrief = board.canvas.briefSegments(api).single()
@@ -556,6 +578,8 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             val modelBrief = board.canvas.briefSegments(model).single()
             assertEquals("← ", modelBrief.prefix)
             assertEquals("creates `Model` instances", modelBrief.text)
+            assertEquals(clientSummary, summaries.summary(clientId))
+            assertNull(summaries.fileTexts[model])
             assertTrue(board.canvas.briefSegments("").isEmpty())
             assertTrue(descendants(canvas).filterIsInstance<JLabel>()
                 .single { it.name == "charts-tree-connections" }.text.contains("Summarized"))
@@ -602,7 +626,8 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             rebuilt.actionMap.get(binding).actionPerformed(ActionEvent(rebuilt, 0, binding.toString()))
             PlatformTestUtil.waitWithEventsDispatching("Cached briefs should reappear",
                 { rebuilt.briefs?.running == false }, 20)
-            assertEquals(3, requests.get())
+            assertEquals(1, fills)
+            assertEquals(2, requests.get())
 
             // Showing another file's links drops the briefs, which describe only the briefed file's links.
             checkNotNull(rebuilt.connectionButtonScreenBounds(client)).let {
@@ -616,7 +641,7 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             assertEquals("calls `Api.run` to start at api/Api.java:L3", summarizedClientSite.brief)
 
             // A new review revision with the same file scope retains the live-source graph and its cached briefs.
-            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(ReviewSummaries(buildSummaryTree(files)), revision = 1)))
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(summaries, revision = 1)))
             val refreshed = panel()
             checkNotNull(refreshed.connectionButtonScreenBounds(client)).let {
                 clickRowAction(refreshed, it)
@@ -625,6 +650,15 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
                 refreshed.connectionSelection?.path == client && refreshed.connectionSelection?.connections != null
             }, 20)
             assertSame(summarizedClientSite, refreshed.connectionSelection?.connections?.outgoing?.get(api))
+
+            clickRowAction(refreshed, checkNotNull(refreshed.briefButtonScreenBounds(client)))
+            PlatformTestUtil.waitWithEventsDispatching("Existing file and link summaries should reappear", {
+                refreshed.briefs?.running == false
+            }, 20)
+            assertEquals("Starts the API for clients", refreshed.canvas.briefSegments(client).single().text)
+            assertEquals(clientBrief.text, refreshed.canvas.briefSegments(api).single().text)
+            assertEquals(1, fills)
+            assertEquals(2, requests.get())
 
             // Removing a file from the review scope discards the old graph, including links to that file.
             canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(

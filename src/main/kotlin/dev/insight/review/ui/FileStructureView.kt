@@ -64,7 +64,7 @@ internal data class FileViewCard(
 
     val scopePaths: Set<String> by lazy { topics.files.mapTo(hashSetOf()) { it.path } + fileSummaries.keys }
     val fileSummaries: Map<String, String?> by lazy {
-        summaries.tree.nodes.filter { it.kind == SummaryKind.FILE }.associate { it.path to summaries.text(it.id) }
+        summaries.tree.fileNodes.associate { it.path to summaries.text(it.id) }
     }
 
     fun reached(): Set<String> = structure?.blocks.orEmpty().flatMapTo(linkedSetOf()) { it.reaches }

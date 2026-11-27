@@ -36,9 +36,11 @@ import dev.insight.review.ExplainResults
 import dev.insight.review.ExplainTarget
 import dev.insight.review.ReviewCanvasFile
 import dev.insight.review.ReviewCanvasOwner
+import dev.insight.review.ReviewContextChange
 import dev.insight.review.ReviewPipeline
 import dev.insight.review.ReviewPipelineQueue
 import dev.insight.review.ReviewSource
+import dev.insight.review.ReviewSummarySnapshot
 import dev.insight.review.ReviewTabState
 import dev.insight.review.ReviewVocabulary
 import dev.insight.review.ScopedSummaryFill
@@ -110,9 +112,11 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
     private val artifactFiles = mutableMapOf<CanvasTabKey, ReviewCanvasFile>()
     val canvasFile = artifactFile(CanvasTabKey.Summaries)
     protected val explanations = ExplainResults()
-    internal val contextSummaryActions = ContextSummaryActions(::canFillSummary, ::fillSummary) { file ->
-        state.snapshotFiles.any { it.path == file.path && it.fingerprint == file.fingerprint }
-    }
+    internal val contextSummaryActions = ContextSummaryActions(
+        ::canFillSummary, ::fillSummary,
+        matchesDiff = { file -> state.snapshotFiles.any { it.path == file.path && it.fingerprint == file.fingerprint } },
+        generateOwned = { path, kind -> scopedSummaryFill.requestOwned(path, kind) },
+    )
 
     protected fun embeddedReviewContext(location: ReviewCodeLocation): ContextData =
         embeddedPickerEvidence(location, state.snapshotFiles, if (disposed) null else summaryActionsAtCurrentRevision())
@@ -219,6 +223,9 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         views.forEach { tileGrid.setTileEnabled(viewTileId(it.key), enabled, reason.takeUnless { enabled }) }
         scheduleTileRefresh()
     }
+
+    /** Coalesces canvas updates while a run saves summaries or topics; the timer renders the last save too. */
+    private val canvasTimer = Timer(CANVAS_REFRESH_MS) { if (!disposed) summariesChanged() }.apply { isRepeats = false }
 
     /** Coalesces the tile stats updates of a burst of changes, such as a run saving summaries. */
     private val tileTimer = Timer(TILE_REFRESH_MS) { refreshTiles() }.apply { isRepeats = false }
@@ -532,12 +539,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         return SummariesCard(summaries, session.busy, canSummarize, pendingSummaryEntries(summaries), pages)
     }
 
-    private fun pendingSummaryEntries(summaries: ReviewSummaries): Set<Int> =
-        if (scopedSummaryFill.busy) summaries.tree.nodes.asSequence()
-            .filter { it.kind == SummaryKind.FILE || it.kind == SummaryKind.DIRECTORY }
-            .filter { summaries.text(it.id) == null && scopedSummaryFill.pending(it.path, it.kind) }
-            .mapTo(hashSetOf()) { it.id }
-        else emptySet()
+    private fun pendingSummaryEntries(summaries: ReviewSummaries): Set<Int> = scopedSummaryFill.pendingIds(summaries)
 
     protected fun chartsCard(): ChartsCard? {
         if (!state.chartsVisible) return null
@@ -561,11 +563,43 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
 
     protected fun groupingCard() = if (state.groupingVisible) TopicsCard(state.grouping, state.summaries, canSummarize, state.groupingSummaries) else null
 
-    /** Redraws the cards soon, once for a burst of saves or session updates; tabs without a run timer redraw now. */
-    protected open fun scheduleCanvasRefresh() = summariesChanged()
+    /** Snapshot of the current summary state and pending fills for cards and extensions. */
+    protected fun summarySnapshot(running: Boolean = session.busy): ReviewSummarySnapshot {
+        val summaries = state.summaries
+        return ReviewSummarySnapshot(
+            summaries = summaries,
+            running = running,
+            canGenerate = canSummarize,
+            pendingIds = pendingSummaryEntries(summaries),
+            pendingFiles = scopedSummaryFill.pendingFiles,
+        )
+    }
+
+    /** Routes context run events to the shared canvas update and fill cancellation lifecycle. */
+    protected fun handleContextChange(change: ReviewContextChange) {
+        when (change) {
+            ReviewContextChange.SOURCE -> renderCanvas()
+            ReviewContextChange.SUMMARIES_STARTED -> { scopedSummaryFill.cancel(); renderCanvas() }
+            ReviewContextChange.TOPICS_STARTED -> canvas.updateTopics(topicsCard())
+            ReviewContextChange.GROUPING_STARTED -> canvas.updateGrouping(groupingCard())
+            ReviewContextChange.TOPIC_SUMMARIES_STARTED, ReviewContextChange.GROUPING_SUMMARIES_STARTED -> {
+                scopedSummaryFill.cancel()
+                summariesChanged()
+            }
+            ReviewContextChange.SUMMARIES_SAVED, ReviewContextChange.TOPIC_ASSIGNED, ReviewContextChange.GROUPING_ASSIGNED ->
+                scheduleCanvasRefresh()
+        }
+    }
+
+    /** Redraws the cards soon, once for a burst of saves or session updates. */
+    protected open fun scheduleCanvasRefresh() { if (!disposed && !canvasTimer.isRunning) canvasTimer.start() }
+
+    /** Cancels any pending throttled canvas refresh (e.g. when a pipeline ends). */
+    protected fun stopCanvasRefresh() { canvasTimer.stop() }
 
     /** The topics and grouping cards show the file summaries too, so they follow every summary and chat update. */
     protected open fun summariesChanged() {
+        canvasTimer.stop()
         canvas.updateSummaries(summariesCard())
         canvas.updateCharts(chartsCard())
         canvas.updateReportViewer(reportViewerCard())
@@ -586,6 +620,7 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         onOpenSource = {}
         onOpenChat = {}
         tileTimer.stop()
+        canvasTimer.stop()
         canvas.onPageFocused = {}
         canvas.onPagesChanged = {}
         canvas.onRemoveCharts = {}
@@ -605,6 +640,10 @@ internal abstract class ReviewTab<S : ReviewSource, T : ReviewTabState<S>>(
         canvas.showNotes(CanvasState(emptyList()))
         canvas.removeAll()
         removeAll()
+    }
+
+    internal companion object {
+        const val CANVAS_REFRESH_MS = 250
     }
 }
 
