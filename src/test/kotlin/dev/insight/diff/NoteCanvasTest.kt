@@ -1383,13 +1383,12 @@ class NoteCanvasTest : BasePlatformTestCase() {
         val canvas = NoteCanvas({ opened += it }, {}, project = project, sourceActions = SourceCanvasActions(showDiffCard = { requested += it }))
             .apply { setSize(1400, 900) }
         try {
-            val sources = paths.map { ReviewSourceBlock(ReviewSourceRange(it, 1, 1), "val a = 1") }
-            canvas.showNotes(CanvasState(paths.map { ReviewNote(listOf(it), "Explanation.") }, sources))
+            canvas.showNotes(CanvasState(paths.map { ReviewNote(listOf(it), "Explanation.") }))
             run {
                 layoutTree(canvas)
                 val buttons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
                     .filter { it.toolTipText == "Show diff in tab" }
-                assertEquals(4, buttons.size)
+                assertEquals(2, buttons.size)
                 requested.clear()
                 buttons.forEach { button ->
                     assertTrue("Diff button must retain its width", button.width >= button.preferredSize.width)
@@ -1397,10 +1396,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
                         javax.swing.SwingUtilities.convertPoint(button, Point(button.width - 1, button.height - 1), button.parent)))
                     button.doClick()
                 }
-                assertEquals(paths + paths, requested)
+                assertEquals(paths, requested)
                 opened.clear()
                 descendants(canvas).filterIsInstance<com.intellij.ui.components.ActionLink>().forEach { it.doClick() }
-                assertEquals(paths + paths, opened)
+                assertEquals(paths, opened)
             }
         } finally { canvas.dispose() }
     }
@@ -1463,14 +1462,13 @@ class NoteCanvasTest : BasePlatformTestCase() {
         } finally { canvas.dispose() }
     }
 
-    fun testDiffCardsOpenFromBlockButtonsUseNativeDiffViewersAndReleaseWhenRemoved() {
+    fun testSnapshotTabsUseHeaderlessViewersAndReleaseWhenRemoved() {
         val settings = com.intellij.diff.impl.DiffSettingsHolder.DiffSettings.getSettings()
         val originalToolOrder = settings.diffToolsOrder.toList()
         val fileA = ReviewFile("src/a.kt", "/project/src/a.kt", null, "modified", "-old\n+new\n", "1", "val a = 1\n", "val a = 2\n")
         val fileB = ReviewFile("src/b.kt", "/project/src/b.kt", null, "added", "+added\n", "1", "", "val b = 3\n")
         val requested = mutableListOf<String>()
-        val removed = mutableListOf<String>()
-        val cards = DiffCanvasCards({}, project, removeDiff = { removed += it })
+        val cards = DiffCanvasCards({}, project)
         val canvas = NoteCanvas({}, {}, project = project, sourceActions = SourceCanvasActions(showDiffCard = { requested += it }), extension = cards)
             .apply { setSize(1400, 900) }
         try {
@@ -1478,9 +1476,8 @@ class NoteCanvasTest : BasePlatformTestCase() {
             canvas.showNotes(CanvasState(listOf(note), listOf(source)))
             val diffButtons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
                 .filter { it.toolTipText == "Show diff in tab" }
-            assertEquals(2, diffButtons.size)
-            diffButtons.forEach { it.doClick() }
-            assertEquals(listOf("src/a.kt", "src/b.kt"), requested)
+            diffButtons.single().doClick()
+            assertEquals(listOf("src/a.kt"), requested)
 
             canvas.showNotes(cards, DiffCanvasContent(listOf(fileA, fileB)), CanvasState(listOf(note), listOf(source)))
             assertEquals(4, canvas.tabs.tabCount)
@@ -1498,11 +1495,10 @@ class NoteCanvasTest : BasePlatformTestCase() {
 
             assertSame(viewerA, descendants(canvas).filterIsInstance<DiffFileEditor>().single { it.file == fileA })
 
-            val removeButtons = descendants(canvas).filterIsInstance<com.intellij.ui.InplaceButton>()
-                .filter { it.toolTipText == "Remove diff block" }
-            assertEquals(2, removeButtons.size)
-            removeButtons.first().doClick()
-            assertEquals(listOf("src/a.kt"), removed)
+            val sourceViewer = descendants(canvas).filterIsInstance<DiffSourceEditor>().single()
+            for (viewer in listOf(sourceViewer, viewerA, viewerB)) {
+                assertEquals(listOf(viewer), viewer.parent.components.toList())
+            }
 
             canvas.showNotes(cards, DiffCanvasContent(listOf(fileB)), CanvasState(listOf(note), listOf(source)))
             assertTrue(viewerA.isDisposed && viewerA.editors.all { it.isDisposed })

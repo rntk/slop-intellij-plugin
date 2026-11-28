@@ -65,57 +65,19 @@ internal class SnapshotCanvasCards(
         return card
     }
 
-    /** A diff snapshot of [path] around the viewer [editor] makes for the card's inner width and zoom; [onRemove] takes it off the canvas. */
-    fun diffCard(path: String, status: String, onRemove: () -> Unit, editor: (width: Int, zoom: Double) -> JComponent): JPanel {
-        val width = cardWidth(720)
-        val header = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.empty(8, 12, 8, 8)
-            add(JLabel("Diff snapshot · $status").apply {
-                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-            }, BorderLayout.CENTER)
-            add(InplaceButton(IconButton("Remove diff block", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
-                onRemove()
-            }.apply { cursor = Cursor.getDefaultCursor() }, BorderLayout.EAST)
-        }
-        val viewer = editor(width - scaled(4), zoom)
-        val card = JPanel(BorderLayout()).apply {
-            background = UIUtil.getListBackground(); border = cardBorder()
-            add(JPanel(BorderLayout()).apply {
-                isOpaque = false
-                add(header, BorderLayout.NORTH)
-                add(fileRow(path, showDiffButton = false).apply { border = JBUI.Borders.empty(0, 12, 8, 8) }, BorderLayout.CENTER)
-            }, BorderLayout.NORTH)
-            add(viewer, BorderLayout.CENTER)
-        }
-        return card
-    }
+    fun diffCard(editor: (width: Int, zoom: Double) -> JComponent): JPanel =
+        snapshotCard(editor(cardWidth(720) - scaled(4), zoom))
 
     fun sourceCard(block: ReviewSourceBlock): JPanel {
-        val range = block.range
-        val width = cardWidth(640)
-        val header = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            border = JBUI.Borders.empty(8, 12, 8, 8)
-            add(JLabel("Source snapshot · ${range.side.label} · Lines ${range.startLine}–${range.endLine}").apply {
-                font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-            }, BorderLayout.CENTER)
-            add(InplaceButton(IconButton("Remove source block", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
-                sourceActions.removeSource(range)
-            }, BorderLayout.EAST)
-        }
         val editor = editors.getOrPut(block.key) { DiffSourceEditor(block, project) }
-        editor.resizeFor(width - scaled(4), zoom)
-        val card = JPanel(BorderLayout()).apply {
-            background = UIUtil.getListBackground(); border = cardBorder()
-            add(JPanel(BorderLayout()).apply {
-                isOpaque = false
-                add(header, BorderLayout.NORTH)
-                add(fileRow(range.path).apply { border = JBUI.Borders.empty(0, 12, 8, 8) }, BorderLayout.CENTER)
-            }, BorderLayout.NORTH)
-            add(editor, BorderLayout.CENTER)
-        }
-        return card
+        editor.resizeFor(cardWidth(640) - scaled(4), zoom)
+        return snapshotCard(editor)
+    }
+
+    private fun snapshotCard(viewer: JComponent): JPanel = JPanel(BorderLayout()).apply {
+        background = UIUtil.getListBackground()
+        border = cardBorder()
+        add(viewer, BorderLayout.CENTER)
     }
 
     fun noteCard(note: ReviewNote): JPanel {
@@ -159,7 +121,7 @@ internal class SnapshotCanvasCards(
     }
 
     /** File name as a link, its folder dimmed next to it; the full path stays in the tooltip. */
-    private fun fileRow(path: String, showDiffButton: Boolean = true): JComponent = JPanel(BorderLayout(scaled(6), 0)).apply {
+    private fun fileRow(path: String): JComponent = JPanel(BorderLayout(scaled(6), 0)).apply {
         isOpaque = false
         toolTipText = vocabulary.openTooltip(path)
         val name = path.substringAfterLast('/')
@@ -181,7 +143,7 @@ internal class SnapshotCanvasCards(
             }
         }, BorderLayout.CENTER)
         val canvasText = vocabulary.showOnCanvas
-        if (showDiffButton && canvasText != null) {
+        if (canvasText != null) {
             add(InplaceButton(IconButton(canvasText, vocabulary.showOnCanvasIcon, vocabulary.showOnCanvasIcon)) {
                 sourceActions.showDiffCard(path)
             }.apply { cursor = Cursor.getDefaultCursor(); toolTipText = canvasText }, BorderLayout.EAST)

@@ -193,7 +193,6 @@ internal class CodeReviewTab(
             openSymbol = { symbol ->
                 findSourceFile(project, symbol.path, symbol.absolutePath)?.let { OpenFileDescriptor(project, it, symbol.offset).navigate(true) }
             },
-            removeSource = { range -> state.removeSource(range); renderCanvas() },
             showDiffCard = { path -> showSourceBlock(path, null) },
             openFileAt = { path, line -> openFile(path, line) },
             showFileLines = { path, lines -> showSourceBlock(path, lines) },

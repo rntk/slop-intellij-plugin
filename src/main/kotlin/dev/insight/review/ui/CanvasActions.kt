@@ -7,7 +7,6 @@ import dev.insight.review.ChartPathSearch
 import dev.insight.review.PatchSource
 import dev.insight.review.ContextSummaryLauncher
 import dev.insight.review.ReviewSource
-import dev.insight.review.ReviewSourceRange
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSymbol
 import dev.insight.review.SummaryNode
@@ -19,7 +18,6 @@ import kotlinx.coroutines.CoroutineScope
 /** Source and file navigation supplied by the review hosting the canvas. */
 internal data class SourceCanvasActions(
     val openSymbol: (ReviewSymbol) -> Unit = {},
-    val removeSource: (ReviewSourceRange) -> Unit = {},
     val showDiffCard: (String) -> Unit = {},
     /** Open a file at a line; null falls back to the canvas file opener. */
     val openFileAt: ((String, Int?) -> Unit)? = null,

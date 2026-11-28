@@ -68,7 +68,6 @@ internal data class DiffWallLinks(
 internal class DiffCanvasCards(
     open: (String) -> Unit,
     private val project: Project? = null,
-    private val removeDiff: (String) -> Unit = {},
     openDirectoryDiff: ((List<ReviewFile>) -> Unit)? = null,
     openMovesOnWall: (List<ReviewFile>) -> Unit = {},
     metricActions: MetricCardActions = MetricCardActions(),
@@ -90,7 +89,6 @@ internal class DiffCanvasCards(
     internal constructor(
         open: (String) -> Unit,
         project: Project?,
-        removeDiff: (String) -> Unit,
         openDirectoryDiff: ((List<ReviewFile>) -> Unit)?,
         openMovesOnWall: (List<ReviewFile>) -> Unit,
         metricActions: MetricCardActions,
@@ -103,7 +101,7 @@ internal class DiffCanvasCards(
         diffSession: (() -> ReviewDiffSession)?,
         contextSummaryActions: ContextSummaryActions?,
         wallLinks: DiffWallLinks,
-    ) : this(open, project, removeDiff, openDirectoryDiff, openMovesOnWall, metricActions, openWallDiff, showAllChanges,
+    ) : this(open, project, openDirectoryDiff, openMovesOnWall, metricActions, openWallDiff, showAllChanges,
         wallChats, openWallOnCanvas, openOnWall, reviewDestinations, diffSession,
         contextSummaryActions) {
         this.wallLinks = wallLinks
@@ -248,7 +246,7 @@ internal class DiffCanvasCards(
     }
 
     private fun diffCard(file: ReviewFile, snapshots: SnapshotCanvasCards): JPanel =
-        snapshots.diffCard(file.path, file.status, { removeDiff(file.path) }) { width, zoom ->
+        snapshots.diffCard { width, zoom ->
             diffEditors.getOrPut(file.diffKey) { DiffFileEditor(file, project, session = diffSession) }.also { it.resizeFor(width, zoom) }
         }
 

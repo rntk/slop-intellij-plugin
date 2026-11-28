@@ -143,7 +143,6 @@ internal class DiffReviewTab(
             "and other project files are read when a question needs them."
     }, subject = { key -> if (key == WALL_CANVAS_CHAT) "the walkthrough's canvas" else state.walkthroughOrPending.hunk(key)?.let(::walkHunkName) ?: key })
     private val diffCards = DiffCanvasCards(showDiff, project,
-        removeDiff = { path -> state.removeDiff(path); renderCanvas() },
         openDirectoryDiff = openDirectoryDiff,
         openMovesOnWall = { files -> openDiffsWall(files, "Moved code") },
         metricActions = MetricCardActions(
@@ -184,7 +183,6 @@ internal class DiffReviewTab(
                     OpenFileDescriptor(project, file, symbol.offset).navigate(true)
                 }
             },
-            removeSource = { range -> state.removeSource(range); renderCanvas() },
             showDiffCard = { path ->
                 if (state.showDiff(path) != null) {
                     renderCanvas()
