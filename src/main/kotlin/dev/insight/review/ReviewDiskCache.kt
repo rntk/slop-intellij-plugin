@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 private val LOG = logger<ReviewDiskCache>()
 
-/** Review marks and generated results keyed by evidence. A damaged or unwritable cache never prevents a review. */
+/** Generated review results keyed by evidence. A damaged or unwritable cache never prevents a review. */
 class ReviewDiskCache(private val directory: Path) {
     /** Results per slot, shared by every tab of the scope so one tab's save never drops another's entries. */
     private val results = HashMap<String, Map<String, LinkedHashMap<String, String>>>()
@@ -83,8 +83,16 @@ class ReviewDiskCache(private val directory: Path) {
 
     private fun writeResults(slot: String, entries: Map<String, LinkedHashMap<String, String>>) {
         write(RESULTS, slot, slot, JsonObject().apply {
-            entries.forEach { (name, texts) -> add(name, JsonObject().apply { texts.forEach { (key, text) -> addProperty(key, text) } }) }
+            entries.forEach { (name, texts) ->
+                if (name != LEGACY_REVIEWED || texts.isNotEmpty()) {
+                    add(name, JsonObject().apply { texts.forEach { (key, text) -> addProperty(key, text) } })
+                }
+            }
         })
+    }
+
+    internal fun legacyReviewedKeys(slot: String): Set<String> = results(slot) { entries ->
+        entries.getValue(LEGACY_REVIEWED).filterValues { it == "true" }.keys
     }
 
     private fun file(category: String, slot: String) = directory.resolve(reviewFingerprint(category)).resolve("${reviewFingerprint(slot)}.json")
@@ -99,8 +107,9 @@ class ReviewDiskCache(private val directory: Path) {
         internal const val FILLED = "filled"
         internal const val GROUPING = "grouping"
         internal const val GROUPING_FILLED = "grouping_filled"
-        internal const val REVIEWED = "reviewed"
-        private val RESULT_KINDS = listOf(SUMMARIES, TOPICS, FILLED, GROUPING, GROUPING_FILLED, REVIEWED)
+        // Retain legacy marks so a cache write before the IDE saves workspace state cannot lose them.
+        private const val LEGACY_REVIEWED = "reviewed"
+        private val RESULT_KINDS = listOf(SUMMARIES, TOPICS, FILLED, GROUPING, GROUPING_FILLED, LEGACY_REVIEWED)
         private val projects = ConcurrentHashMap<Path, ReviewDiskCache>()
         fun forProject(project: Project): ReviewDiskCache? = project.basePath?.let {
             projects.computeIfAbsent(Path.of(it, DIRECTORY, "review-cache"), ::ReviewDiskCache)
@@ -122,7 +131,7 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
     private val keys = HashMap<String, String>()
 
     fun load(context: Any) {
-        if (disk != null) slot = reviewJson.toJson(listOf(mode, paths?.sorted(), context))
+        slot = reviewJson.toJson(listOf(mode, paths?.sorted(), context))
         lastSaved.clear()
     }
 
@@ -142,17 +151,13 @@ internal class ReviewCacheSession(private val disk: ReviewDiskCache?, private va
             current.cachedIds + restored.keys)
     }
 
-    fun restoreReviewed(current: ReviewedFiles, sources: List<ReviewSource>) {
-        current.restore(sources, saved(ReviewDiskCache.REVIEWED)?.keys ?: current.keys)
+    fun restoreReviewed(current: ReviewedFiles, sources: List<ReviewSource>, marks: ReviewedMarkStore?) {
+        current.restore(sources, marks?.keys(slot) { disk?.legacyReviewedKeys(slot).orEmpty() } ?: current.keys)
     }
 
     /** Apply only this operation so stale tabs cannot discard or resurrect unrelated marks. */
-    fun saveReviewed(keys: List<String>, reviewed: Boolean) {
-        if (disk == null || slot.isEmpty()) return
-        disk.results(slot, save = true) { results ->
-            val saved = results.getValue(ReviewDiskCache.REVIEWED)
-            keys.forEach { if (reviewed) saved[it] = "true" else saved.remove(it) }
-        }
+    fun saveReviewed(keys: List<String>, reviewed: Boolean, marks: ReviewedMarkStore?) {
+        if (slot.isNotEmpty()) marks?.set(slot, keys, reviewed)
     }
 
     fun restoreTopics(current: ReviewTopics, name: String = ReviewDiskCache.TOPICS): ReviewTopics {

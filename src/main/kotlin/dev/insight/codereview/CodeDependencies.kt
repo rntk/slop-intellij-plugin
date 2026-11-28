@@ -11,7 +11,7 @@ import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiManager
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.ProjectGraphAnalyzer
-import dev.insight.review.ReviewDiskCache
+import dev.insight.agent.ProjectDataPaths
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
@@ -36,7 +36,7 @@ internal class CodeDependencyWalker(private val project: Project) {
         val types = FileTypeRegistry.getInstance()
         val manager = PsiManager.getInstance(project)
         fun followed(file: VirtualFile) = file.isValid && !file.isDirectory && index.isInContent(file) &&
-            !types.isFileIgnored(file) && !changes.isIgnoredFile(file) && "/.idea/" !in file.path && "/${ReviewDiskCache.DIRECTORY}/" !in file.path
+            !types.isFileIgnored(file) && !changes.isIgnoredFile(file) && "/.idea/" !in file.path && !ProjectDataPaths.isInternal(file.path)
         val found = LinkedHashSet<VirtualFile>().apply { add(entry) }
         val beyond = HashSet<String>()
         val left = HashSet<String>()

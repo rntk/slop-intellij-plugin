@@ -7,6 +7,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PartitionTreeTest {
+    @Test fun `private insight state is excluded while authored and unknown paths stay visible`() {
+        assertTrue(isExcludedPath(".insight/review-cache/tree.json"))
+        assertTrue(isExcludedPath(".insight/canvas-sessions/session.json"))
+        assertTrue(isExcludedPath(".insight/boards/old.json"))
+        assertTrue(isExcludedPath(".insight/knowledge/ledger.jsonl"))
+        assertTrue(isExcludedPath(".insight-review-cache/old.json"))
+        assertFalse(isExcludedPath(".insight/knowledge/architecture.md"))
+        assertFalse(isExcludedPath(".insight/prompt-library/review.md"))
+        assertFalse(isExcludedPath(".insight/custom/notes.md"))
+        assertFalse(isExcludedPath("src/insight-review-cache.kt"))
+    }
+
+    @Test fun `a private directory selected as the scan root is excluded`() {
+        assertTrue(isExcludedPath(".insight/boards", isDirectory = true))
+        assertTrue(isExcludedPath(".insight/knowledge", isDirectory = true).not())
+    }
+
     @Test fun `one partition per directory with its direct files`() {
         val parts = partitionFiles(listOf("a/b/X.kt", "a/Y.kt", "Z.md", "a/b/W.kt"), 10)
         assertEquals(

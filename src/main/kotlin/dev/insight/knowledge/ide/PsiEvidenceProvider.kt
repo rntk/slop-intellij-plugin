@@ -61,7 +61,7 @@ class PsiEvidenceProvider(private val project: Project) : EvidenceProvider {
     }
 
     private fun file(ref: String): Evidence {
-        val virtual = ProjectPaths.find(project, ref)?.takeIf { !it.isDirectory } ?: return missing(ref)
+        val virtual = ProjectPaths.find(project, ref)?.takeIf { !it.isDirectory && !isExcludedPath(ProjectPaths.relative(project, it)) } ?: return missing(ref)
         val psi = PsiManager.getInstance(project).findFile(virtual)
         val lineCount = psi?.let { PsiDocumentManager.getInstance(project).getDocument(it)?.lineCount }
         return Evidence(ref, psi?.let(::fileOutline) ?: "(binary or unreadable file)", normalizeProjectPath(ref), 1, lineCount)
@@ -83,8 +83,8 @@ class PsiEvidenceProvider(private val project: Project) : EvidenceProvider {
     }
 
     private fun directory(ref: String): Evidence {
-        val directory = ProjectPaths.find(project, ref)?.takeIf { it.isDirectory } ?: return missing(ref)
-        val children = directory.children.filter { ProjectPaths.contains(project, it) && !isExcludedPath(it.name, it.isDirectory) }.sortedWith(compareBy({ !it.isDirectory }, { it.name }))
+        val directory = ProjectPaths.find(project, ref)?.takeIf { it.isDirectory && !isExcludedPath(ProjectPaths.relative(project, it), isDirectory = true) } ?: return missing(ref)
+        val children = directory.children.filter { ProjectPaths.contains(project, it) && !isExcludedPath(ProjectPaths.relative(project, it), it.isDirectory) }.sortedWith(compareBy({ !it.isDirectory }, { it.name }))
         val lines = children.take(MAX_ENTRIES).map { child ->
             if (child.isDirectory) child.name + "/" else child.name + oneLine(child).let { if (it.isEmpty()) "" else " — $it" }
         }

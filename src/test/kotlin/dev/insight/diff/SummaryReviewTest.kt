@@ -6,6 +6,7 @@ import dev.insight.codereview.CodeScope
 import dev.insight.codereview.CodeSnapshot
 import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewedFiles
+import dev.insight.review.ReviewedMarkStore
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -15,11 +16,12 @@ class SummaryReviewTest {
     @get:Rule val temp = TemporaryFolder()
     private fun file(path: String, hash: String = "1") = ReviewFile(path, "/repo/$path", null, "modified", "patch", hash)
     private fun disk() = ReviewDiskCache(temp.root.toPath().resolve("cache"))
+    private val marks = ReviewedMarkStore()
 
     @Test fun `directory marks persist and a changed diff clears only that file`() {
         val files = listOf(file("src/a.kt"), file("src/b.kt"), file("doc.md"))
         val snapshot = ReviewSnapshot(files, emptyList())
-        fun state(next: ReviewSnapshot = snapshot) = DiffReviewState(cache = disk()).apply { update(next) }
+        fun state(next: ReviewSnapshot = snapshot) = DiffReviewState(cache = disk(), marks = marks).apply { update(next) }
         val original = state()
         val directory = original.summaries.tree.nodes.single { it.path == "src" }
         original.setReviewed(directory, true)
@@ -40,7 +42,7 @@ class SummaryReviewTest {
     @Test fun `source reviews keep marks across regeneration but invalidate edited evidence`() {
         val files = listOf(CodeFile("a.kt", "/repo/a.kt", "val a = 1"), CodeFile("b.kt", "/repo/b.kt", "val b = 1"))
         val snapshot = CodeSnapshot(CodeScope("", "/repo"), files)
-        fun state() = CodeReviewState(cache = disk()).apply { update(snapshot) }
+        fun state() = CodeReviewState(cache = disk(), marks = marks).apply { update(snapshot) }
         val original = state()
         original.setReviewed(original.summaries.tree.root, true)
         original.clearSummaries()
@@ -56,7 +58,7 @@ class SummaryReviewTest {
     @Test fun `switching diff comparisons isolates review marks`() {
         val snapshot = ReviewSnapshot(listOf(file("a.kt")), emptyList())
         for (cache in listOf(null, disk())) {
-            val state = DiffReviewState(cache = cache).apply { update(snapshot) }
+            val state = DiffReviewState(cache = cache, marks = if (cache == null) null else marks).apply { update(snapshot) }
             state.setReviewed(state.summaries.tree.root, true)
             state.update(snapshot.copy(comparison = ReviewComparison(ReviewDiffRequest(ReviewDiffMode.REVISIONS, "/repo", "main", "dev"))))
             assertTrue(state.reviewed.keys.isEmpty())

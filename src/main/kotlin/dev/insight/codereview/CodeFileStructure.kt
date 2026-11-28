@@ -19,7 +19,6 @@ import com.intellij.util.Processor
 import dev.insight.callgraph.CallGraphLanguageSupport
 import dev.insight.callgraph.ProjectGraphAnalyzer
 import dev.insight.graph.SymbolKind
-import dev.insight.review.ReviewDiskCache
 import dev.insight.agent.codeScopeRoots
 import dev.insight.agent.findSourceFile
 import dev.insight.review.ui.FileBlock
@@ -191,7 +190,7 @@ internal class CodeFileStructureBuilder(private val project: Project, snapshot: 
     }
 
     private fun followed(file: VirtualFile) = file.isValid && !file.isDirectory && index.isInContent(file) &&
-        "/.idea/" !in file.path && "/${ReviewDiskCache.DIRECTORY}/" !in file.path
+        "/.idea/" !in file.path && !dev.insight.agent.ProjectDataPaths.isInternal(file.path)
 
     /** A scope path for a file in the snapshot, else its project-relative path. */
     private fun reviewPath(file: VirtualFile): String =

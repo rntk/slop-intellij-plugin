@@ -1,6 +1,9 @@
 package dev.insight.settings
 
+import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.options.BoundConfigurable
+import com.intellij.openapi.options.ConfigurationException
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.ui.dsl.builder.COLUMNS_LARGE
@@ -11,10 +14,18 @@ import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.layout.selectedValueIs
+import com.intellij.platform.ide.progress.ModalTaskOwner
+import com.intellij.platform.ide.progress.TaskCancellation
+import com.intellij.platform.ide.progress.runWithModalProgressBlocking
 import dev.insight.decisions.DEFAULT_DECISIONS_URL
 import dev.insight.llm.LlmConfiguration
 import dev.insight.llm.LlmProvider
 import javax.swing.JTextField
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withContext
+
+private val LOG = logger<ChatSettingsConfigurable>()
 
 class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
     private val settings = ChatSettings.getInstance()
@@ -22,11 +33,34 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
     private val apiKeys = mutableMapOf<LlmProvider, String>()
     private var storedDecisionsApiKey = ""
     private var decisionsApiKey = ""
+    private var credentialLoadFailure: Exception? = null
 
     override fun createPanel(): DialogPanel {
         storedApiKeys.clear()
         apiKeys.clear()
         val state = settings.state
+        // Load before exposing editable fields, but keep the credential store off the EDT.
+        credentialLoadFailure = null
+        try {
+            withCredentialProgress("Loading API keys") {
+                storedDecisionsApiKey = settings.decisionsApiKey.orEmpty()
+                for (provider in LlmProvider.entries) {
+                    storedApiKeys[provider] = settings.apiKey(provider).orEmpty()
+                }
+            }
+        } catch (failure: ProcessCanceledException) {
+            throw failure
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Exception) {
+            LOG.warn("Could not load API keys", failure)
+            storedApiKeys.clear()
+            storedDecisionsApiKey = ""
+            credentialLoadFailure = failure
+            return panel { row { label("Could not load API keys. Close and reopen settings to retry.") } }
+        }
+        decisionsApiKey = storedDecisionsApiKey
+        apiKeys.putAll(storedApiKeys)
         return panel {
             group("API Concurrency") {
                 row("Max concurrent LLM requests:") {
@@ -48,8 +82,6 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
                         }
                 }
             }
-            storedDecisionsApiKey = settings.decisionsApiKey.orEmpty()
-            decisionsApiKey = storedDecisionsApiKey
             group("Decisions API") {
                 row("Context window (tokens):") {
                     intTextField(0..Int.MAX_VALUE)
@@ -88,8 +120,6 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
             }
             for (provider in LlmProvider.entries) {
                 val options = state.options(provider)
-                storedApiKeys[provider] = settings.apiKey(provider).orEmpty()
-                apiKeys[provider] = storedApiKeys.getValue(provider)
                 lateinit var urlField: JTextField
                 lateinit var outputTokensField: JTextField
                 group(provider.displayName) {
@@ -186,22 +216,45 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
     }
 
     override fun apply() {
+        credentialLoadFailure?.let { throw ConfigurationException("Could not load API keys. Close and reopen settings to retry.") }
         super.apply()
+        // The panel's non-credential bindings have already been committed.
         settings.updateRequestLimits()
-        apiKeys.forEach { (provider, value) ->
-            val key = value.trim()
-            if (key != storedApiKeys[provider]) {
-                settings.setApiKey(provider, key)
-                storedApiKeys[provider] = key
-                apiKeys[provider] = key
-            }
+        val keysToSave = apiKeys.mapValues { it.value.trim() }.filter { (provider, key) ->
+            key != storedApiKeys[provider]
         }
         val decisionsKey = decisionsApiKey.trim()
-        if (decisionsKey != storedDecisionsApiKey) {
-            settings.decisionsApiKey = decisionsKey
-            storedDecisionsApiKey = decisionsKey
-            decisionsApiKey = decisionsKey
+        val saveDecisionsKey = decisionsKey != storedDecisionsApiKey
+        val savedKeys = mutableMapOf<LlmProvider, String>()
+        var savedDecisionsKey = false
+        try {
+            if (keysToSave.isNotEmpty() || saveDecisionsKey) {
+                withCredentialProgress("Saving API keys") {
+                    keysToSave.forEach { (provider, key) ->
+                        settings.setApiKey(provider, key)
+                        savedKeys[provider] = key
+                    }
+                    if (saveDecisionsKey) {
+                        settings.decisionsApiKey = decisionsKey
+                        savedDecisionsKey = true
+                    }
+                }
+            }
+        } catch (failure: Exception) {
+            // Keep controls modified for retry, tracking writes that succeeded.
+            storedApiKeys.putAll(savedKeys)
+            if (savedDecisionsKey) storedDecisionsApiKey = decisionsKey
+            apiKeys.clear()
+            apiKeys.putAll(storedApiKeys)
+            decisionsApiKey = storedDecisionsApiKey
+            if (failure is ProcessCanceledException) throw failure
+            if (failure is CancellationException) throw failure
+            throw ConfigurationException("Could not save API keys: ${failure.message ?: failure.javaClass.simpleName}")
         }
+        storedApiKeys.putAll(savedKeys)
+        if (savedDecisionsKey) storedDecisionsApiKey = decisionsKey
+        apiKeys.replaceAll { _, value -> value.trim() }
+        decisionsApiKey = decisionsKey
     }
 
     // Don't keep plaintext keys around after the dialog closes.
@@ -211,5 +264,12 @@ class ChatSettingsConfigurable : BoundConfigurable("Insight Chat") {
         apiKeys.clear()
         storedDecisionsApiKey = ""
         decisionsApiKey = ""
+        credentialLoadFailure = null
+    }
+}
+
+internal fun withCredentialProgress(title: String, operation: () -> Unit) {
+    runWithModalProgressBlocking(ModalTaskOwner.guess(), title, TaskCancellation.nonCancellable()) {
+        withContext(Dispatchers.IO) { operation() }
     }
 }

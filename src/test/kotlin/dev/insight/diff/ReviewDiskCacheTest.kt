@@ -7,6 +7,7 @@ import dev.insight.review.summarize
 import com.google.gson.JsonPrimitive
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.util.xmlb.XmlSerializer
 import dev.insight.codereview.CodeFile
 import dev.insight.codereview.CodeReviewState
 import dev.insight.codereview.CodeScope
@@ -19,10 +20,12 @@ import dev.insight.review.ReviewDiskCache
 import dev.insight.review.ReviewSource
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewedFiles
+import dev.insight.review.ReviewedMarkStore
 import dev.insight.review.SummaryKind
 import dev.insight.review.buildSummaryTree
 import dev.insight.review.chatFocus
 import dev.insight.review.current
+import dev.insight.review.reviewJson
 import dev.insight.review.topicReadingSummaries
 import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
@@ -35,8 +38,9 @@ class ReviewDiskCacheTest {
     @get:Rule val temp = TemporaryFolder()
     private val directory get() = temp.root.toPath().resolve(".insight/review-cache")
     private fun cache() = ReviewDiskCache(directory)
+    private val marks = ReviewedMarkStore()
     private fun snapshot(text: String = "fun a() = 1") = CodeSnapshot(CodeScope("", "/repo"), listOf(CodeFile("a.kt", "/repo/a.kt", text)))
-    private fun code(snapshot: CodeSnapshot = snapshot()) = CodeReviewState(cache = cache()).apply { update(snapshot) }
+    private fun code(snapshot: CodeSnapshot = snapshot()) = CodeReviewState(cache = cache(), marks = marks).apply { update(snapshot) }
     private fun fill(current: () -> ReviewSummaries, save: (Map<Int, String>) -> Unit) {
         while (!current().complete) save(current().ready().associateWith { "Generated summary $it" })
     }
@@ -200,6 +204,65 @@ class ReviewDiskCacheTest {
         assertNull(ReviewDiskCache(blocked).read("test", "slot", "hash"))
     }
 
+    @Test fun `generated cache ignores only its own directory`() {
+        cache().write("test", "slot", "hash", JsonPrimitive("saved"))
+        assertEquals("*\n", Files.readString(directory.resolve(".gitignore")))
+        assertFalse(Files.exists(directory.parent.resolve(".gitignore")))
+        assertEquals("saved", cache().read("test", "slot", "hash")?.asString)
+    }
+
+    @Test fun `review marks survive workspace state serialization and merge targeted changes`() {
+        val first = ReviewedMarkStore()
+        first.set("code", listOf("a", "b"), true)
+        val xml = XmlSerializer.serialize(first.state)
+        val reopened = ReviewedMarkStore().apply {
+            loadState(XmlSerializer.deserialize(xml, ReviewedMarkStore.SavedState::class.java))
+        }
+        reopened.set("code", listOf("a"), false)
+        reopened.set("diff", listOf("c"), true)
+        assertEquals(setOf("b"), reopened.keys("code"))
+        assertEquals(setOf("c"), reopened.keys("diff"))
+        assertEquals(setOf("a", "b"), first.keys("code"))
+    }
+
+    @Test fun `review marks restore without a generated result cache`() {
+        val first = CodeReviewState(marks = marks).apply { update(snapshot()) }
+        first.setReviewed(first.summaries.tree.root, true)
+        val reopened = CodeReviewState(marks = marks).apply { update(snapshot()) }
+        assertTrue(reopened.reviewed.isReviewed(reopened.summaries.tree.root))
+    }
+
+    @Test fun `legacy review marks import once even after the last mark is cleared and workspace state reloads`() {
+        val snapshot = snapshot()
+        val scope = snapshot.scope
+        val slot = reviewJson.toJson(listOf("code", null, listOf(scope.path, scope.entry, scope.excludes)))
+        val mark = ReviewedFiles.key(snapshot.files.single())
+        cache().write("results", slot, slot, JsonObject().apply {
+            add("reviewed", JsonObject().apply { addProperty(mark, "true") })
+        })
+        val state = CodeReviewState(cache = cache()).apply { update(snapshot) }
+        fill({ state.summaries }) { state.summarize(state.revision, it) }
+
+        fun load(store: ReviewedMarkStore) = CodeReviewState(cache = cache(), marks = store).apply { update(snapshot) }
+        val first = load(marks)
+        assertTrue(first.reviewed.isReviewed("a.kt"))
+        assertTrue(first.summaries.complete)
+        first.setReviewedPaths(listOf("a.kt"), false)
+        assertFalse(load(marks).reviewed.isReviewed("a.kt"))
+
+        val xml = XmlSerializer.serialize(marks.state)
+        val reopened = ReviewedMarkStore().apply {
+            loadState(XmlSerializer.deserialize(xml, ReviewedMarkStore.SavedState::class.java))
+        }
+        assertFalse(load(reopened).reviewed.isReviewed("a.kt"))
+        assertNotNull(cache().read("results", slot, slot))
+    }
+
+    @Test fun `opening scopes with no legacy marks does not persist empty scopes`() {
+        code()
+        assertTrue(marks.state.scopes.isEmpty())
+    }
+
     @Test fun `one changed file misses only its own entries and those of every node above it`() {
         fun file(path: String, fingerprint: String = "1") = ReviewFile(path, "/repo/$path", null, "modified", "patch $path", fingerprint)
         val files = listOf(file("app/a.kt"), file("app/b.kt"), file("lib/c.kt"))
@@ -252,16 +315,17 @@ class ReviewDiskCacheTest {
         for (mode in listOf("code", "diff")) {
             val directory = temp.root.toPath().resolve(mode)
             val shared = ReviewDiskCache(directory)
+            val marks = ReviewedMarkStore()
             val codeSnapshot = snapshot().let { it.copy(files = it.files + CodeFile("b.kt", "/repo/b.kt", "fun b() = 2")) }
             val diffSnapshot = ReviewSnapshot(listOf("a.kt", "b.kt").map {
                 ReviewFile(it, "/repo/$it", null, "modified", "patch", "hash")
             }, emptyList())
             fun tab(cache: ReviewDiskCache = shared): Pair<ReviewedFiles, (String, Boolean) -> Unit> =
                 if (mode == "code") {
-                    val state = CodeReviewState(cache = cache).apply { update(codeSnapshot) }
+                    val state = CodeReviewState(cache = cache, marks = marks).apply { update(codeSnapshot) }
                     state.reviewed to { path, value -> state.setReviewed(state.summaries.tree.nodes.single { it.path == path }, value) }
                 } else {
-                    val state = DiffReviewState(cache = cache).apply { update(diffSnapshot) }
+                    val state = DiffReviewState(cache = cache, marks = marks).apply { update(diffSnapshot) }
                     state.reviewed to { path, value -> state.setReviewed(state.summaries.tree.nodes.single { it.path == path }, value) }
                 }
             val sources: List<ReviewSource> = if (mode == "code") codeSnapshot.files else diffSnapshot.files

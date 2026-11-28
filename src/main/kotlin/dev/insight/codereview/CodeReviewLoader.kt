@@ -14,8 +14,8 @@ import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
-import dev.insight.review.ReviewDiskCache
 import dev.insight.agent.codeScopeRoots
+import dev.insight.agent.ProjectDataPaths
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -92,8 +92,16 @@ internal class CodeReviewLoader(private val project: Project) {
         val changes = ChangeListManager.getInstance(project)
         val types = FileTypeRegistry.getInstance()
         val roots = readAction { codeScopeRoots(project) }
+        fun internal(file: VirtualFile) = ProjectDataPaths.isInternal(relativePath(roots, file))
         fun ignored(file: VirtualFile) = types.isFileIgnored(file) || changes.isIgnoredFile(file) ||
-            file.isDirectory && file.name in setOf(PROJECT_STORE_FOLDER, ReviewDiskCache.DIRECTORY)
+            file.isDirectory && file.name == PROJECT_STORE_FOLDER || internal(file)
+        // The index filter sees both a private directory and its descendants. Count the boundary once while still
+        // rejecting every file under it; a standalone private file such as knowledge/ledger.jsonl counts once too.
+        fun countsAsIgnored(file: VirtualFile): Boolean {
+            if (!internal(file)) return true
+            val parent = file.parent ?: return true
+            return !internal(parent)
+        }
         fun excluded(file: VirtualFile) = !exclusions.isEmpty && exclusions.matches(relativePath(roots, file), file.isDirectory)
         // A project root that is not content itself still holds content roots.
         val starts = readAction {
@@ -113,7 +121,7 @@ internal class CodeReviewLoader(private val project: Project) {
                 if (start.isValid) for (child in start.children) {
                     if (!index.isInContent(child)) continue
                     when {
-                        ignored(child) -> pruned++
+                        ignored(child) -> if (countsAsIgnored(child)) pruned++
                         excluded(child) -> excludedCount++
                         child.isDirectory -> folders += child
                         else -> direct += child
@@ -136,7 +144,7 @@ internal class CodeReviewLoader(private val project: Project) {
                     }) { file ->
                         when {
                             file == folder -> true
-                            ignored(file) -> { pruned++; false }
+                            ignored(file) -> { if (countsAsIgnored(file)) pruned++; false }
                             excluded(file) -> { left++; false }
                             else -> true
                         }
@@ -219,7 +227,7 @@ internal fun codeScope(project: Project, file: VirtualFile): CodeScope {
     val path = codeScopeRoots(project).firstNotNullOfOrNull { VfsUtilCore.getRelativePath(file, it) }
     require(path != null) { "${file.presentableUrl} is not in the project." }
     val name = path.ifEmpty { "The project root" }
-    require(ReviewDiskCache.DIRECTORY !in path.split('/')) { "$name contains generated review cache data." }
+    require(!ProjectDataPaths.isInternal(path)) { "$name contains private Insight data." }
     require(!index.isExcluded(file)) { "$name is excluded from the project." }
     if (!file.isDirectory) {
         require(index.isInContent(file)) { "$name is not part of the project's content." }

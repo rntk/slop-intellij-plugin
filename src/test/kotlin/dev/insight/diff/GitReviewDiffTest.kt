@@ -3,13 +3,16 @@ package dev.insight.diff
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.roots.ModuleRootModificationUtil
 import com.intellij.openapi.vcs.ProjectLevelVcsManager
 import com.intellij.openapi.vcs.VcsDirectoryMapping
 import com.intellij.openapi.vcs.VcsException
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vcs.changes.VcsDirtyScopeManager
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import dev.insight.diff.git.GitReviewDiffProvider
 import kotlinx.coroutines.*
@@ -39,6 +42,7 @@ class GitReviewDiffTest : BasePlatformTestCase() {
         val previousMappings = vcs.directoryMappings
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
         var failure: Throwable? = null
+        var contentRoot: VirtualFile? = null
         try {
             git("init", "-b", "main")
             git("config", "user.email", "review-test@example.com")
@@ -50,6 +54,11 @@ class GitReviewDiffTest : BasePlatformTestCase() {
             write(".gitignore", "ignored.txt\n")
             write("old.txt", "rename me\n")
             write("deleted.txt", "delete me\n")
+            Files.createDirectories(directory.resolve(".insight/canvas-sessions"))
+            Files.createDirectories(directory.resolve(".insight/knowledge"))
+            write("going-private.txt", "moving out of view\n")
+            write(".insight/canvas-sessions/coming-public.txt", "moving into view\n")
+            write(".insight/knowledge/ledger.jsonl", "ledger before\n")
             git("add", ".")
             git("commit", "-m", "base")
             val baseId = git("rev-parse", "HEAD")
@@ -59,6 +68,9 @@ class GitReviewDiffTest : BasePlatformTestCase() {
             write("sample.txt", "topic\n")
             write("added.txt", "new file\n")
             git("mv", "old.txt", "renamed.txt")
+            git("mv", "going-private.txt", ".insight/canvas-sessions/now-private.txt")
+            git("mv", ".insight/canvas-sessions/coming-public.txt", "now-public.txt")
+            write(".insight/knowledge/ledger.jsonl", "ledger after\n")
             git("rm", "deleted.txt")
             git("add", ".")
             git("commit", "-m", "topic")
@@ -70,8 +82,12 @@ class GitReviewDiffTest : BasePlatformTestCase() {
             write("sample.txt", "working copy\n")
             write("untracked.txt", "untracked disk\n")
             write("ignored.txt", "ignored disk\n")
+            git("mv", "old.txt", "renamed-local.txt")
+            write("old.txt", "new untracked content\n")
             val root = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(directory)!!
             root.refresh(false, true)
+            PsiTestUtil.addContentRoot(module, root)
+            contentRoot = root
             vcs.setDirectoryMappings(listOf(VcsDirectoryMapping(root.path, "Git")))
             val job = scope.launch {
                 try {
@@ -90,6 +106,18 @@ class GitReviewDiffTest : BasePlatformTestCase() {
                     assertEquals("deleted", direct.named("deleted.txt").status)
                     assertEquals("renamed", direct.named("renamed.txt").status)
                     assertTrue(direct.named("renamed.txt").previousPath!!.endsWith("old.txt"))
+                    val movedToPrivate = direct.named("going-private.txt")
+                    assertEquals("deleted", movedToPrivate.status)
+                    assertEquals("moving out of view\n", movedToPrivate.before)
+                    assertEquals("", movedToPrivate.after)
+                    val movedToPublic = direct.named("now-public.txt")
+                    assertEquals("added", movedToPublic.status)
+                    assertNull(movedToPublic.previousPath)
+                    assertEquals("", movedToPublic.before)
+                    assertEquals("moving into view\n", movedToPublic.after)
+                    assertFalse(direct.files.any { ".insight/canvas-sessions/" in it.path })
+                    assertEquals("ledger before\n", direct.named("ledger.jsonl").before)
+                    assertEquals("ledger after\n", direct.named("ledger.jsonl").after)
                     assertEquals(topicId, direct.comparison.targetRevision)
 
                     val branch = withContext(Dispatchers.IO) { loader.load(emptySet(), request.copy(mode = ReviewDiffMode.MERGE_BASE)) }
@@ -114,10 +142,18 @@ class GitReviewDiffTest : BasePlatformTestCase() {
                         FileDocumentManager.getInstance().getDocument(root.findFileByRelativePath(name)!!)!!
                     }
                     WriteCommandAction.runWriteCommandAction(project) { documents.forEach { it.setText("unsaved edit\n") } }
+                    val updated = CompletableDeferred<Unit>()
+                    ChangeListManager.getInstance(project).invokeAfterUpdate(true) { updated.complete(Unit) }
+                    updated.await()
+                    val recreated = root.findFileByRelativePath("old.txt")!!.path
                     val working = withContext(Dispatchers.IO) {
-                        loader.load(emptySet(), request.copy(mode = ReviewDiffMode.WORKING_TREE, base = "main"))
+                        loader.load(setOf(recreated), request.copy(mode = ReviewDiffMode.WORKING_TREE, base = "main"))
                     }
                     assertEquals("working copy\n", working.named("sample.txt").after)
+                    assertEquals("renamed", working.named("renamed-local.txt").status)
+                    assertTrue("Expected $recreated among ${working.untracked}", working.untracked.any { it.absolutePath == recreated })
+                    assertEquals("untracked", working.named("old.txt").status)
+                    assertEquals("new untracked content\n", working.named("old.txt").after)
                     cleanPaths.forEach { name ->
                         assertEquals(name, "clean base\n", working.named(name.substringAfterLast('/')).before)
                         assertEquals(name, "unsaved edit\n", working.named(name.substringAfterLast('/')).after)
@@ -139,6 +175,7 @@ class GitReviewDiffTest : BasePlatformTestCase() {
                         fail("Unknown refs must fail instead of falling back to local changes")
                     } catch (_: VcsException) { }
                     assertEquals("main", git("symbolic-ref", "--short", "HEAD"))
+
                 } catch (e: Throwable) { failure = e }
             }
             PlatformTestUtil.waitWithEventsDispatching("Git snapshots should load", { job.isCompleted }, 30 /* seconds */)
@@ -146,6 +183,11 @@ class GitReviewDiffTest : BasePlatformTestCase() {
         } finally {
             scope.cancel()
             vcs.setDirectoryMappings(previousMappings)
+            contentRoot?.let { root ->
+                ModuleRootModificationUtil.updateModel(module) { model ->
+                    model.contentEntries.firstOrNull { it.file == root }?.let(model::removeContentEntry)
+                }
+            }
             directory.toFile().deleteRecursively()
             // The light project is shared with later tests; discard this repository's cached changes.
             VcsDirtyScopeManager.getInstance(project).markEverythingDirty()

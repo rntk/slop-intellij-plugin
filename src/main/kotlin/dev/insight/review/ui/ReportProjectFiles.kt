@@ -17,6 +17,7 @@ import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.StatusBar
 import dev.insight.agent.SourceSide
+import dev.insight.agent.ProjectDataPaths
 import dev.insight.agent.codeScopeRoots
 import dev.insight.agent.findSourceFile
 import dev.insight.context.CodeContext
@@ -87,6 +88,7 @@ internal fun collectProjectReportSnapshot(
         roots.firstNotNullOfOrNull { VfsUtilCore.getRelativePath(file, it) }?.takeIf { it.isNotEmpty() }
 
     fun isIgnored(file: VirtualFile, rel: String): Boolean {
+        if (ProjectDataPaths.isInternal(rel)) return true
         if (rel.split('/').any { it in IGNORED_DIR_NAMES }) return true
         return types.isFileIgnored(file) || changes.isIgnoredFile(file)
     }

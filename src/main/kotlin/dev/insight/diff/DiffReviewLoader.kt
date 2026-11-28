@@ -12,7 +12,7 @@ import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vcs.changes.ContentRevision
 import com.intellij.openapi.vfs.VirtualFile
 import dev.insight.callgraph.DiffService
-import dev.insight.review.ReviewDiskCache
+import dev.insight.agent.ProjectDataPaths
 import dev.insight.review.reviewFingerprint
 import java.io.IOException
 import java.nio.file.Path
@@ -31,16 +31,18 @@ internal class DiffReviewLoader(private val project: Project) {
                 ?: throw VcsException("The selected Git repository is unavailable. Enable the Git plugin and choose a repository.")
         }
         val comparison = loaded?.comparison ?: ReviewComparison()
-        val changes = loaded?.changes?.toList() ?: manager.allChanges.toList()
-        val tracked = changes.mapNotNull { (it.afterRevision ?: it.beforeRevision)?.file?.path }.toSet()
+        val changes = (loaded?.changes?.toList() ?: manager.allChanges.toList()).mapNotNull { change ->
+            val before = change.beforeRevision?.takeUnless { ProjectDataPaths.isPrivateInTrackedDiff(it.file.path) }
+            val after = change.afterRevision?.takeUnless { ProjectDataPaths.isPrivateInTrackedDiff(it.file.path) }
+            if (before == null && after == null) null else before to after
+        }
+        val tracked = changes.mapNotNullTo(hashSetOf()) { (before, after) -> (after ?: before)?.file?.path }
         val untracked = if (!selected.mode.usesWorkingTree) emptyList() else manager.unversionedFilesPaths.mapNotNull { path ->
-            path.virtualFile?.takeIf { !it.isDirectory && it.path !in tracked && "/${ReviewDiskCache.DIRECTORY}/" !in it.path &&
+            path.virtualFile?.takeIf { !it.isDirectory && it.path !in tracked && !ProjectDataPaths.isInternal(it.path) &&
                 (selected.repository == null || ProjectLevelVcsManager.getInstance(project).getVcsRootFor(it)?.path == selected.repository) }
         }.distinctBy { it.path }
-        val files = changes.mapNotNull { change ->
+        val files = changes.mapNotNull { (before, after) ->
             currentCoroutineContext().ensureActive()
-            val before = change.beforeRevision
-            val after = change.afterRevision
             if ((after ?: before)?.file?.isDirectory == true) return@mapNotNull null
             val path = (after ?: before)?.file?.path ?: return@mapNotNull null
             val previous = before?.file?.path?.takeIf { it != path }

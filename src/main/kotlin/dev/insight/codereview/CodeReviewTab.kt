@@ -35,6 +35,8 @@ import dev.insight.review.ChatFocus
 import dev.insight.review.ReviewCommand
 import dev.insight.review.reviewProgressTitle
 import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewedMarkStore
+import com.intellij.openapi.components.service
 import dev.insight.review.ReviewNote
 import dev.insight.review.CapturedReviewContext
 import dev.insight.review.ReviewSummarizer
@@ -118,7 +120,7 @@ internal class CodeReviewTab(
     focus: ChatFocus? = null,
     /** Opens a new tab whose chat is focused on a summary entry. */
     private val toChat: (ChatFocus) -> Unit = {},
-) : ReviewTab<CodeFile, CodeReviewState>(project, CodeReviewState(paths, ReviewDiskCache.forProject(project)), focus,
+) : ReviewTab<CodeFile, CodeReviewState>(project, CodeReviewState(paths, ReviewDiskCache.forProject(project), project.service<ReviewedMarkStore>()), focus,
     ReviewVocabulary.CODE) {
     private val sourcePoints = SourcePoints(project, "Code chat")
 

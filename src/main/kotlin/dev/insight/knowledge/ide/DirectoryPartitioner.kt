@@ -42,15 +42,17 @@ class DirectoryPartitioner(
                 if (keep(root) && !isExcludedPath(path)) files += path
                 continue
             }
+            if (isExcludedPath(ProjectPaths.relative(project, root), isDirectory = true)) continue
             VfsUtilCore.visitChildrenRecursively(root, object : VirtualFileVisitor<Unit>() {
                 override fun visitFileEx(file: VirtualFile): Result {
                     ProgressManager.checkCanceled()
                     if (files.size >= MAX_FILES) return SKIP_CHILDREN
                     if (file.isDirectory) {
-                        val skip = file != root && (isExcludedPath(file.name, isDirectory = true) || !ProjectPaths.contains(project, file) || !index.isInContent(file))
+                        val skip = file != root && (isExcludedPath(ProjectPaths.relative(project, file), isDirectory = true) || !ProjectPaths.contains(project, file) || !index.isInContent(file))
                         return if (skip) SKIP_CHILDREN else CONTINUE
                     }
-                    if (keep(file)) files += ProjectPaths.relative(project, file)
+                    val path = ProjectPaths.relative(project, file)
+                    if (!isExcludedPath(path) && keep(file)) files += path
                     return CONTINUE
                 }
             })

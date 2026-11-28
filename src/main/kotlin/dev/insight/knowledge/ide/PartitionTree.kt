@@ -1,6 +1,7 @@
 package dev.insight.knowledge.ide
 
 import dev.insight.knowledge.KnowledgePartition
+import dev.insight.agent.ProjectDataPaths
 
 /** Directory names whose content is generated or built, never worth distilling. */
 private val EXCLUDED_DIRS = setOf(
@@ -10,6 +11,7 @@ private val EXCLUDED_DIRS = setOf(
 
 /** Whether a project-relative [path] lies inside a generated, build or tooling directory. [isDirectory] says whether [path] itself is one. */
 internal fun isExcludedPath(path: String, isDirectory: Boolean = false): Boolean {
+    if (ProjectDataPaths.isInternal(path)) return true
     val segments = normalizeProjectPath(path).split('/').filter { it.isNotEmpty() }
     return (if (isDirectory) segments else segments.dropLast(1)).any { it in EXCLUDED_DIRS }
 }

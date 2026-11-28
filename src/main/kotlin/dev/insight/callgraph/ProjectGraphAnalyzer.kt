@@ -12,6 +12,7 @@ import dev.insight.graph.CallOccurrence
 import dev.insight.graph.CallOperation
 import dev.insight.graph.RelationKind
 import dev.insight.graph.SymbolKind
+import dev.insight.agent.ProjectDataPaths
 
 /** Builds a complete snapshot of supported project source, including disconnected declarations. Read action only. */
 object ProjectGraphAnalyzer {
@@ -193,11 +194,14 @@ object ProjectGraphAnalyzer {
         progress("Finding supported project files")
         val manager = PsiManager.getInstance(project)
         val files = mutableListOf<PsiFile>()
-        if (selectedFiles != null) files.addAll(selectedFiles.filter { file -> supports.any { it.supportsFile(file) } })
+        if (selectedFiles != null) files.addAll(selectedFiles.filter { file ->
+            val virtual = file.virtualFile
+            (virtual == null || !ProjectDataPaths.isInternal(virtual.path)) && supports.any { it.supportsFile(file) }
+        })
         else ProjectFileIndex.getInstance(project).iterateContent { virtualFile ->
             ProgressManager.checkCanceled()
             // Each language support decides which parsed files it covers; binary files are never parsed.
-            if (!virtualFile.isDirectory && !virtualFile.fileType.isBinary) {
+            if (!virtualFile.isDirectory && !virtualFile.fileType.isBinary && !ProjectDataPaths.isInternal(virtualFile.path)) {
                 manager.findFile(virtualFile)?.takeIf { file -> supports.any { it.supportsFile(file) } }?.let(files::add)
             }
             true

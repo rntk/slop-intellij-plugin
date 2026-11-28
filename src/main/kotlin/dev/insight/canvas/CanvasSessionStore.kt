@@ -263,7 +263,7 @@ class CanvasSessionStore(private val directory: Path) {
         private val ID = Regex("[A-Za-z0-9_-]{1,64}")
         private val json = GsonBuilder().disableHtmlEscaping().create()
 
-        /** Below the project's `.insight` directory, beside the review cache. */
+        /** Below the project's `.insight` directory. */
         const val DIRECTORY = "canvas-sessions"
 
         /** The store of [project], or null when it has no base directory. */

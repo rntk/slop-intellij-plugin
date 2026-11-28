@@ -65,6 +65,7 @@ internal class ProjectFiles(val project: Project) {
         val clean = relative.trim('/').removePrefix("./").ifEmpty { "." }
         val file = roots.firstNotNullOfOrNull { if (clean == ".") it else it.findFileByRelativePath(clean) }
         if (file == null || !index.isInContent(file)) throw ToolInputException("No project file or directory at '$path'.")
+        if (isPrivate(file)) throw ToolInputException("That path contains private Insight data and is not available as project context.")
         return file
     }
 
@@ -73,7 +74,8 @@ internal class ProjectFiles(val project: Project) {
         val found = mutableListOf<VirtualFile>()
         val visitor = { file: VirtualFile ->
             ProgressManager.checkCanceled()
-            if (!file.isDirectory && (matcher == null || matcher.matches(Path.of(file.name)))) found += file
+            if (!file.isDirectory && !isPrivate(file) &&
+                (matcher == null || matcher.matches(Path.of(file.name)))) found += file
             true
         }
         if (directory == null) index.iterateContent(visitor) else index.iterateContentUnderDirectory(directory, visitor)
@@ -84,6 +86,9 @@ internal class ProjectFiles(val project: Project) {
         if (file.fileType.isBinary || file.length > MAX_FILE_BYTES) return null
         return FileDocumentManager.getInstance().getCachedDocument(file)?.text ?: VfsUtilCore.loadText(file)
     }
+
+    private fun isPrivate(file: VirtualFile): Boolean =
+        ProjectDataPaths.isInternal(file.path) || file.canonicalPath?.let(ProjectDataPaths::isInternal) == true
 
     companion object {
         const val MAX_FILE_BYTES = 2L * 1024 * 1024

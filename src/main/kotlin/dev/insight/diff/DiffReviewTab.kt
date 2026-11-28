@@ -35,6 +35,8 @@ import dev.insight.review.ReviewCommand
 import dev.insight.review.ReviewPipeline
 import dev.insight.review.reviewProgressTitle
 import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewedMarkStore
+import com.intellij.openapi.components.service
 import dev.insight.review.ReviewCodeLocation
 import dev.insight.review.ReviewCodeNavigation
 import dev.insight.review.ReviewNote
@@ -117,7 +119,7 @@ internal class DiffReviewTab(
     private val toChat: (ChatFocus) -> Unit = {},
     /** Opens a file of the change on a canvas session, with its related changed files. */
     openOnCanvas: ((path: String, line: Int?) -> Unit)? = null,
-) : ReviewTab<ReviewFile, DiffReviewState>(project, DiffReviewState(paths, ReviewDiskCache.forProject(project)), focus,
+) : ReviewTab<ReviewFile, DiffReviewState>(project, DiffReviewState(paths, ReviewDiskCache.forProject(project), project.service<ReviewedMarkStore>()), focus,
     ReviewVocabulary.DIFF) {
     private val sourcePoints = SourcePoints(project, "Diff chat")
     private val openDirectoryDiff: (List<ReviewFile>) -> Unit = { files -> showDirectoryDiff(project, files) }

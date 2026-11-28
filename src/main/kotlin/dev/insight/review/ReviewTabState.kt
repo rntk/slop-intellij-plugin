@@ -16,13 +16,14 @@ internal class ReviewStateMessages(
 
 /**
  * EDT-owned state shared by the review tabs: canvas notes and source blocks, summaries, topics and their summaries, the
- * reviewed marks and the disk cache that keeps them. Every tool is checked against the same [revision] as its evidence;
+ * reviewed marks and generated result cache. Every tool is checked against the same [revision] as its evidence;
  * a subclass owns the snapshot and moves to a new revision with [applyRevision].
  */
 abstract class ReviewTabState<S : ReviewSource> internal constructor(
     mode: String,
     paths: Set<String>?,
     cache: ReviewDiskCache?,
+    private val markStore: ReviewedMarkStore?,
     private val summaryTree: (List<S>) -> ReviewSummaryTree,
     private val topicTree: (ReviewTopics) -> ReviewSummaryTree,
     private val messages: ReviewStateMessages,
@@ -34,7 +35,7 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
     }
     fun setReviewedPaths(paths: List<String>, value: Boolean) {
         val keys = reviewed.set(paths, value)
-        disk.saveReviewed(keys, value)
+        disk.saveReviewed(keys, value, markStore)
     }
     /** The grouping reading tree: a topic tree under its own root, so a focus can tell which of the two trees it came from. */
     private fun groupingTree(topics: ReviewTopics): ReviewSummaryTree = topicTree(topics).asGrouping()
@@ -111,7 +112,7 @@ abstract class ReviewTabState<S : ReviewSource> internal constructor(
         // Saved entries are keyed by content, so the slot alone picks them; changed files simply miss their keys.
         disk.load(slot)
         if (reset) reviewed.restore(next, emptySet())
-        disk.restoreReviewed(reviewed, next)
+        disk.restoreReviewed(reviewed, next, markStore)
         summaries = disk.restoreSummaries(ReviewDiskCache.SUMMARIES, summaries)
         topics = disk.restoreTopics(topics)
         topicSummaries = disk.restoreSummaries(ReviewDiskCache.FILLED, topicSummaries.retainedIn(topicTree(topics)))

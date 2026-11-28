@@ -27,11 +27,12 @@ class CodeReviewLoaderTest : BasePlatformTestCase() {
         assertSame(file, load(scope("scope"), first).byPath.getValue(file.path))
     }
 
-    fun `test generated review cache is pruned from scopes before it is read`() {
+    fun `test generated review cache is pruned while authored prompt sibling remains`() {
         myFixture.addFileToProject("scope/a.kt", "fun a() = 1")
         myFixture.addFileToProject("scope/.insight/review-cache/result.json", "{\"summary\":\"generated\"}")
+        myFixture.addFileToProject("scope/.insight/prompt-library/review.md", "# Authored prompt")
         val snapshot = load(scope("scope"))
-        assertEquals(listOf("scope/a.kt"), snapshot.files.map { it.path })
+        assertEquals(listOf("scope/.insight/prompt-library/review.md", "scope/a.kt"), snapshot.files.map { it.path })
         assertEquals(1, snapshot.ignoredCount)
     }
 

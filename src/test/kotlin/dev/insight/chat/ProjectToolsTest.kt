@@ -2,10 +2,14 @@ package dev.insight.chat
 
 import com.google.gson.JsonParser
 import com.intellij.openapi.application.EDT
+import com.intellij.openapi.roots.ModuleRootModificationUtil
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import kotlinx.coroutines.*
 import dev.insight.agent.ToolInputException
+import java.nio.file.Files
 
 class ProjectToolsTest : BasePlatformTestCase() {
     private fun call(name: String, arguments: String): String {
@@ -71,6 +75,35 @@ class ProjectToolsTest : BasePlatformTestCase() {
     fun `test paths outside the project are rejected`() {
         assertTrue(invalid("read_file", """{"path":"app/../../etc/passwd"}""").contains(".."))
         assertTrue(invalid("read_file", """{"path":"missing.kt"}""").contains("No project file"))
+    }
+
+    fun `test private data is hidden through file and directory symlinks`() {
+        val directory = Files.createTempDirectory("insight-private-links")
+        try {
+            val sessions = Files.createDirectories(directory.resolve(".insight/canvas-sessions"))
+            val knowledge = Files.createDirectories(directory.resolve(".insight/knowledge"))
+            val ledger = Files.writeString(knowledge.resolve("ledger.jsonl"), "private-token")
+            Files.writeString(sessions.resolve("session.txt"), "private-token")
+            Files.createSymbolicLink(directory.resolve("ledger-alias.txt"), ledger)
+            Files.createSymbolicLink(directory.resolve("sessions-alias"), sessions)
+            val root = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(directory)!!
+            root.refresh(false, true)
+            PsiTestUtil.addContentRoot(module, root)
+            try {
+                for (path in listOf("ledger-alias.txt", "sessions-alias/session.txt")) {
+                    assertTrue(invalid("read_file", """{"path":"$path"}""").contains("private Insight data"))
+                }
+                assertTrue(invalid("list_files", """{"directory":"sessions-alias"}""").contains("private Insight data"))
+                assertEquals("No matches for 'private-token'.", call("search_text", """{"query":"private-token"}"""))
+                assertFalse(call("list_files", "{}").contains("-alias"))
+            } finally {
+                ModuleRootModificationUtil.updateModel(module) { model ->
+                    model.contentEntries.firstOrNull { it.file == root }?.let(model::removeContentEntry)
+                }
+            }
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
     }
 
     fun `test search text finds case insensitive matches`() {

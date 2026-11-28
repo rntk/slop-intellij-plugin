@@ -2,6 +2,7 @@ package dev.insight.diff
 
 import dev.insight.callgraph.LineChange
 import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewedMarkStore
 import dev.insight.review.PatchSource
 import dev.insight.review.ReviewPipeline
 import dev.insight.review.ReviewSourceBlock
@@ -46,8 +47,8 @@ data class ReviewSnapshot(
     val comparison: ReviewComparison = ReviewComparison(),
 )
 /** EDT-owned state. Every tool is checked against the same revision as its evidence. */
-class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) : ReviewTabState<ReviewFile>(
-    "diff", paths, cache, { buildSummaryTree(it) }, { buildTopicSummaryTree(it) }, ReviewStateMessages(
+class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null, marks: ReviewedMarkStore? = null) : ReviewTabState<ReviewFile>(
+    "diff", paths, cache, marks, { buildSummaryTree(it) }, { buildTopicSummaryTree(it) }, ReviewStateMessages(
         refreshing = "The diff is refreshing. Retry after refresh completes.",
         changed = DIFF_CHANGED,
         notePaths = "Use 1 to 30 included file paths.",

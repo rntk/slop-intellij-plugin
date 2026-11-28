@@ -216,6 +216,20 @@ class PsiKnowledgeAdaptersTest : LightJavaCodeInsightFixtureTestCase() {
         )
     }
 
+    fun `test partitioner skips knowledge ledger and keeps authored and ordinary siblings`() {
+        myFixture.addFileToProject(".insight/knowledge/ledger.jsonl", "{\"secret\":true}")
+        myFixture.addFileToProject(".insight/knowledge/Architecture.md", "## Authored knowledge")
+        myFixture.addFileToProject("src/Ordinary.java", "class Ordinary {}")
+
+        val files = runBlocking {
+            DirectoryPartitioner(project).partitions(listOf(""))
+        }.flatMap { it.files }.toSet()
+
+        assertFalse(files.any { it.endsWith("ledger.jsonl") })
+        assertTrue(files.any { it.endsWith("Architecture.md") })
+        assertTrue(files.any { it.endsWith("Ordinary.java") })
+    }
+
     fun `test project paths reject absolute and parent paths`() {
         val file = myFixture.addFileToProject("safe/Path.java", "class Path {} ").virtualFile
         assertNotNull(ProjectPaths.find(project, "safe/Path.java"))

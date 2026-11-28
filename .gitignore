@@ -47,6 +47,9 @@ bin/
 gradle/
 
 
-# Generated review results
-.insight/
+# Insight private and generated project data. Authored files in .insight/knowledge
+# and .insight/prompt-library can be committed; unknown .insight paths stay visible.
+.insight/review-cache/
+.insight/canvas-sessions/
+.insight/boards/
 .claude/

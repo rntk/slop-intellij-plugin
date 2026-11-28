@@ -1353,10 +1353,12 @@ internal class CanvasSessionPanel(
         }
         val name = model.card(cardId)?.title ?: file.source.name
         gapJobs[cardId] = scope.launch(Dispatchers.EDT) {
-            val workflow = SchematicGapWorkflow(services.maxContextChars(), services.complete())
             var failed = 0
             var problem: String? = null
             try {
+                val workflow = withContext(Dispatchers.IO) {
+                    SchematicGapWorkflow(services.maxContextChars(), services.complete())
+                }
                 withBackgroundProgress(project, "Summarizing gaps of $name") {
                     withCountProgress("Summarizing gaps of $name", "gaps") { onProgress ->
                         for ((index, unit) in units.withIndex()) {
@@ -1389,6 +1391,10 @@ internal class CanvasSessionPanel(
             } catch (e: CancellationException) {
                 showStatus("")
                 throw e
+            } catch (e: Throwable) {
+                if (e is ControlFlowException) throw e
+                LOG.warn("Canvas gap summary of $name failed", e)
+                showStatus("Could not summarize gaps of $name: ${e.message ?: e.javaClass.simpleName}")
             } finally {
                 if (gapJobs[cardId] === coroutineContext[Job]) gapJobs.remove(cardId)
             }

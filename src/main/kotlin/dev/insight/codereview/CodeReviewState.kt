@@ -2,6 +2,7 @@ package dev.insight.codereview
 
 import dev.insight.agent.ToolInputException
 import dev.insight.review.ReviewDiskCache
+import dev.insight.review.ReviewedMarkStore
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.Summary
 import dev.insight.review.ReviewSource
@@ -32,8 +33,8 @@ internal const val CODE_CHANGED = "The files changed. Start a new request to rev
  * source blocks belong to file contents: an edit drops those of the edited file. Summaries and topics are kept by
  * content-hash keys, so they survive edits elsewhere, refreshes and scope changes; only Regenerate clears them.
  */
-class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null) : ReviewTabState<CodeFile>(
-    "code", paths, cache, ::codeSummaryTree, ::codeTopicSummaryTree, ReviewStateMessages(
+class CodeReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null, marks: ReviewedMarkStore? = null) : ReviewTabState<CodeFile>(
+    "code", paths, cache, marks, ::codeSummaryTree, ::codeTopicSummaryTree, ReviewStateMessages(
         refreshing = "The code is refreshing. Retry after refresh completes.",
         changed = CODE_CHANGED,
         notePaths = "Use 1 to 30 file paths in scope.",

@@ -19,11 +19,10 @@ import java.nio.file.Path
 
 internal suspend fun directoryCanvasFiles(project: Project, directory: VirtualFile): List<VirtualFile> = readAction {
     check(directory.isValid && directory.isDirectory) { "The directory is no longer available." }
-    val cache = project.basePath?.trimEnd('/')?.plus("/.insight/")
     val projectFiles = ProjectFiles(project)
     val roots = if (projectFiles.index.isInContent(directory)) listOf(directory)
         else ProjectRootManager.getInstance(project).contentRoots.filter { VfsUtilCore.isAncestor(directory, it, false) }
-    roots.flatMap { projectFiles.contentFiles(it, null) }.distinct().filterNot { cache != null && it.path.startsWith(cache) }
+    roots.flatMap { projectFiles.contentFiles(it, null) }.distinct()
         .sortedBy { relativePath(project, it.path) }
 }
 
