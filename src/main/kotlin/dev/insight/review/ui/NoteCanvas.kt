@@ -731,34 +731,32 @@ internal class NoteCanvas(
         overlay.show(from, to, view, fade)
     }
 
-    private fun documentZoomControls(key: CanvasTabKey): JComponent = JPanel(FlowLayout(FlowLayout.RIGHT, scaled(2), 0)).apply {
-        isOpaque = false
-        add(JButton("Back").apply {
-            name = "document-zoom-back"
-            toolTipText = "Return to the view before clicking a card or diff (Esc)"
+    /** Mirrors the Tree board zoom HUD: `Back | − 100% + | 100%` as pill and icon buttons. */
+    private fun documentZoomControls(key: CanvasTabKey): JComponent = pillToolbarRow(
+        listOf(PillButton("Back", "document-zoom-back", "Return to the view before clicking a card or diff (Esc)",
+            icon = com.intellij.icons.AllIcons.Actions.Back) { backDocument(key) }.apply {
             isEnabled = documentHistory[key]?.isNotEmpty() == true
-            addActionListener { backDocument(key) }
-        })
-        add(JButton("−").apply {
-            name = "document-zoom-out"
-            toolTipText = "Zoom out (Ctrl/⌘ + wheel)"
-            isEnabled = documentZoom > MIN_DOCUMENT_ZOOM
-            addActionListener { zoomDocument(key, documentZoom / 1.2) }
-        })
-        add(JLabel("${(documentZoom * 100).roundToInt()}%").apply { name = "document-zoom-level" })
-        add(JButton("+").apply {
-            name = "document-zoom-in"
-            toolTipText = "Zoom in (Ctrl/⌘ + wheel)"
-            isEnabled = documentZoom < MAX_DOCUMENT_ZOOM
-            addActionListener { zoomDocument(key, documentZoom * 1.2) }
-        })
-        add(JButton("100%").apply {
-            name = "document-zoom-reset"
-            toolTipText = "Reset document zoom"
+        }),
+        listOf(
+            ToolbarIconButton(com.intellij.icons.AllIcons.General.ZoomOut, "document-zoom-out", "Zoom out (Ctrl/⌘ + wheel)") {
+                zoomDocument(key, documentZoom / 1.2)
+            }.apply { isEnabled = documentZoom > MIN_DOCUMENT_ZOOM },
+            object : JLabel("${(documentZoom * 100).roundToInt()}%", SwingConstants.CENTER) {
+                override fun getPreferredSize(): Dimension = Dimension(JBUI.scale(44), JBUI.scale(TREE_CONTROL_HEIGHT_DP))
+                override fun getMinimumSize(): Dimension = preferredSize
+            }.apply {
+                name = "document-zoom-level"
+                font = JBFont.small()
+                foreground = UIUtil.getLabelForeground()
+            },
+            ToolbarIconButton(com.intellij.icons.AllIcons.General.ZoomIn, "document-zoom-in", "Zoom in (Ctrl/⌘ + wheel)") {
+                zoomDocument(key, documentZoom * 1.2)
+            }.apply { isEnabled = documentZoom < MAX_DOCUMENT_ZOOM },
+        ),
+        listOf(PillButton("100%", "document-zoom-reset", "Reset document zoom") { zoomDocument(key, 1.0) }.apply {
             isEnabled = documentZoom != 1.0
-            addActionListener { zoomDocument(key, 1.0) }
-        })
-    }
+        }),
+    ).apply { (layout as FlowLayout).alignment = FlowLayout.RIGHT }
 
     private fun installDocumentWheelZoom(key: CanvasTabKey, scroll: JScrollPane) {
         descendantsOf(scroll.viewport).filterIsInstance<DocumentColumnsPanel>().forEach { panel ->

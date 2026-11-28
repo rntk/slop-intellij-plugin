@@ -21,6 +21,9 @@ import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import javax.swing.*
+import dev.insight.review.ui.PillButton
+import dev.insight.review.ui.PillComboBox
+import dev.insight.review.ui.pillToolbarRow
 import dev.insight.review.ui.viewSelector
 
 /** Navigation, removal and in-place refresh supplied by the canvas hosting the metric cards. */
@@ -83,17 +86,16 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
                     else "A word's position compares its share of removed and added words, its size how often it occurs. ") +
                     "Click a word to open its files' diffs."
             }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-                isOpaque = false
-                add(wordScopeButton(scopes))
-                add(InplaceButton(IconButton("Remove words", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { actions.removeWords() }
-                    .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.WEST)
-            add(viewSelector("words-view", WordView.entries, wordView, scaled(4), scaledFont(JBFont.small()),
-                WordView::label, WordView::hint) {
-                wordView = it
-                actions.refresh(CanvasTabKey.Words)
-            }, BorderLayout.EAST)
+            add(pillToolbarRow(
+                listOf(wordScopeButton(scopes)),
+                listOf(viewSelector("words-view", WordView.entries, wordView, 0, scaledFont(JBFont.small()),
+                    WordView::label, WordView::hint) {
+                    wordView = it
+                    actions.refresh(CanvasTabKey.Words)
+                }),
+                listOf(InplaceButton(IconButton("Remove words", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { actions.removeWords() }
+                    .apply { cursor = Cursor.getDefaultCursor() }),
+            ), BorderLayout.WEST)
         }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -150,8 +152,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
-                if (changes != null && semanticMode == SemanticMode.COMPLEXITY) add(JComboBox(COMPLEXITY_METRICS.toTypedArray()).apply {
-                    name = "semantic-metric"
+                if (changes != null && semanticMode == SemanticMode.COMPLEXITY) add(PillComboBox(COMPLEXITY_METRICS, name = "semantic-metric", prefix = "Metric").apply {
                     font = scaledFont(JBFont.small())
                     renderer = SimpleListCellRenderer.create("") { it.label }
                     toolTipText = "The metric plotted for each function"
@@ -214,8 +215,7 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
             }, BorderLayout.CENTER)
             add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
                 isOpaque = false
-                if (moves.sources.isNotEmpty()) add(JComboBox((listOf<String?>(null) + moves.sources.map { it.path }).toTypedArray()).apply {
-                    name = "move-focus"
+                if (moves.sources.isNotEmpty()) add(PillComboBox(listOf<String?>(null) + moves.sources.map { it.path }, name = "move-focus", prefix = "Source").apply {
                     font = scaledFont(JBFont.small())
                     renderer = SimpleListCellRenderer.create<String?>("All files") { it }
                     toolTipText = "Show where the code of one file went"
@@ -318,11 +318,12 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
     private fun escapeHtml(text: String) = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     /** Limits the chart to one changed file or directory, chosen from a list that typing filters. */
-    private fun wordScopeButton(scopes: List<WordScope>): JButton = JButton(wordScope.toString(), AllIcons.General.ArrowDown).apply {
-        name = "word-scope"
-        horizontalTextPosition = SwingConstants.LEFT
+    private fun wordScopeButton(scopes: List<WordScope>): JButton = PillButton(
+        wordScope.toString(), "word-scope", "Count the words of one changed file or directory · type in the list to filter it",
+        AllIcons.General.ArrowDown,
+    ).apply {
         font = scaledFont(JBFont.small())
-        toolTipText = "Count the words of one changed file or directory · type in the list to filter it"
+        horizontalTextPosition = SwingConstants.LEADING
         addActionListener {
             JBPopupFactory.getInstance().createPopupChooserBuilder(scopes)
                 .setTitle("Word Changes Scope")

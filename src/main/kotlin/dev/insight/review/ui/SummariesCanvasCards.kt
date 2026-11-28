@@ -176,7 +176,7 @@ internal class SummariesCanvasCards(
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {
             name = "summaries-controls"
             isOpaque = false
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(6, 12, 6, 8))
             add(JLabel(when (key) {
                 CanvasTabKey.Hierarchy, CanvasTabKey.Document -> title(key)
                 is CanvasTabKey.SummarySearch -> vocabulary.summariesTitle + " · Search"
@@ -186,65 +186,64 @@ internal class SummariesCanvasCards(
                 toolTipText = vocabulary.summariesTooltip
                 installReviewStatus(this, project, summariesStatus(content, vocabulary.noFiles))
             }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-                isOpaque = false
-                if (document) add(actions.zoomControls(key))
-                val summaries = content.summaries
-                if (branchLevels > 0 && !explorer && summariesView.mode != ReviewSummariesMode.TREE) add(summaryLevels(tab, tree, branchLevels))
-                if (hierarchy) add(JCheckBox(if (vocabulary == ReviewVocabulary.CODE) "Show source" else "Show diffs", tab.showHierarchyDiffs).apply {
-                    name = "summaries-show-diffs"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Show file previews beside the hierarchy"
-                    addActionListener { tab.showHierarchyDiffs = isSelected; refreshSummaries(tab) }
-                })
-                if (splitMode) add(JCheckBox("Soft-wrap", summariesView.softWrap).apply {
-                    name = "summaries-soft-wrap"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Wrap summaries to the available width and expand their tree rows to match"
-                    addActionListener { summariesView.softWrap = isSelected; refreshSummaries(tab) }
-                })
-                add(JCheckBox("Tags cloud", summariesView.tagsCloud).apply {
-                    name = "summaries-tags-cloud"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Size summary words by their importance in the child summaries or file source"
-                    addActionListener { summariesView.tagsCloud = isSelected; refreshSummaries(tab) }
-                })
-                if (compactControls) add(unviewedToggle(tab))
-                if (key == CanvasTabKey.Summaries || tab.search) add(viewSelector(
-                    "summaries-mode", summaryModes(tab), summariesView.mode, scaled(4), scaledFont(JBFont.small()),
-                    ::summaryModeLabel, ::summaryModeTooltip,
-                ) {
-                    summariesView.mode = it; tab.scroll = 0; refreshSummaries(tab)
-                })
-                add(JButton(when {
+            val summaries = content.summaries
+            val toggles = mutableListOf<JComponent>()
+            if (document) toggles += actions.zoomControls(key)
+            if (hierarchy) toggles += PillCheckBox(
+                if (vocabulary == ReviewVocabulary.CODE) "Show source" else "Show diffs",
+                "summaries-show-diffs", "Show file previews beside the hierarchy", tab.showHierarchyDiffs,
+            ).apply {
+                font = scaledFont(JBFont.small())
+                addActionListener { tab.showHierarchyDiffs = isSelected; refreshSummaries(tab) }
+            }
+            if (splitMode) toggles += PillCheckBox(
+                "Soft-wrap", "summaries-soft-wrap",
+                "Wrap summaries to the available width and expand their tree rows to match", summariesView.softWrap,
+            ).apply {
+                font = scaledFont(JBFont.small())
+                addActionListener { summariesView.softWrap = isSelected; refreshSummaries(tab) }
+            }
+            toggles += PillCheckBox(
+                "Tags cloud", "summaries-tags-cloud",
+                "Size summary words by their importance in the child summaries or file source", summariesView.tagsCloud,
+            ).apply {
+                font = scaledFont(JBFont.small())
+                addActionListener { summariesView.tagsCloud = isSelected; refreshSummaries(tab) }
+            }
+            if (compactControls) toggles += unviewedToggle(tab)
+            val views = mutableListOf<JComponent>()
+            if (branchLevels > 0 && !explorer && summariesView.mode != ReviewSummariesMode.TREE) views += summaryLevels(tab, tree, branchLevels)
+            if (key == CanvasTabKey.Summaries || tab.search) views += viewSelector(
+                "summaries-mode", summaryModes(tab), summariesView.mode, scaled(4), scaledFont(JBFont.small()),
+                ::summaryModeLabel, ::summaryModeTooltip,
+            ) {
+                summariesView.mode = it; tab.scroll = 0; refreshSummaries(tab)
+            }
+            val buttons = mutableListOf<JComponent>()
+            buttons += PillButton(
+                when {
                     version != null -> "Regenerate original"
                     summaries.total == 0 || summaries.count == 0 -> "Summarize"
                     summaries.complete -> "Regenerate"
                     else -> "Continue"
-                }).apply {
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    isEnabled = content.canRun && summaries.total > 0 && !summaryGenerationRunning
-                    toolTipText = if (summaries.complete) "Write every summary again (/summaries)"
-                        else vocabulary.summarizeTooltip
-                    addActionListener { summaryActions.summarize() }
-                })
-                if (key is CanvasTabKey.SummaryPage) {
-                    add(InplaceButton(IconButton("Close ${title(key)}", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
-                        summaryActions.removeSummaries(key)
-                    }.apply { cursor = Cursor.getDefaultCursor() })
-                } else {
-                    add(InplaceButton(IconButton("Close search tab", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
-                        closeSearchTab(tab)
-                    }.apply { name = "close-search-tab"; cursor = Cursor.getDefaultCursor() })
-                }
-            }, BorderLayout.WEST)
+                },
+                tooltip = if (summaries.complete) "Write every summary again (/summaries)" else vocabulary.summarizeTooltip,
+                primary = true,
+            ).apply {
+                font = scaledFont(JBFont.small())
+                isEnabled = content.canRun && summaries.total > 0 && !summaryGenerationRunning
+                addActionListener { summaryActions.summarize() }
+            }
+            buttons += if (key is CanvasTabKey.SummaryPage) {
+                InplaceButton(IconButton("Close ${title(key)}", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
+                    summaryActions.removeSummaries(key)
+                }.apply { cursor = Cursor.getDefaultCursor() }
+            } else {
+                InplaceButton(IconButton("Close search tab", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
+                    closeSearchTab(tab)
+                }.apply { name = "close-search-tab"; cursor = Cursor.getDefaultCursor() }
+            }
+            add(pillToolbarRow(toggles, views, buttons), BorderLayout.WEST)
             if (compactControls) add(summaryVersionRow(tab, original, includeVersions = false, includeUnviewed = false), BorderLayout.EAST)
         }
         val panelActions = ChangeSummaryActions(
@@ -311,10 +310,8 @@ internal class SummariesCanvasCards(
             add(JPanel(VerticalLayout(0)).apply {
                 isOpaque = false
                 if (!compactControls) add(summaryVersionRow(tab, original))
-                else if (summarySession.versions.isNotEmpty() || version != null) add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), scaled(4))).apply {
-                    isOpaque = false
-                    border = JBUI.Borders.empty(0, 12)
-                    addVersionControls(this, tab, original)
+                else if (summarySession.versions.isNotEmpty() || version != null) add(pillToolbarRow(versionControls(tab, original)).apply {
+                    border = JBUI.Borders.empty(4, 12)
                 })
                 if (tab.search) add(searchRow(tab))
                 if (explorer) add(summaryExplorerNavigation(tab, tree))
@@ -408,50 +405,53 @@ internal class SummariesCanvasCards(
         return card
     }
 
-    private fun unviewedToggle(tab: SummariesTab): JCheckBox = JCheckBox("Show only unviewed", tab.view.showOnlyUnviewed).apply {
-        name = "summaries-show-only-unviewed"
-        isOpaque = false
+    private fun unviewedToggle(tab: SummariesTab): JCheckBox = PillCheckBox(
+        "Show only unviewed", "summaries-show-only-unviewed", "Show only unviewed files and their folders", tab.view.showOnlyUnviewed,
+    ).apply {
         font = scaledFont(JBFont.small())
-        cursor = Cursor.getDefaultCursor()
-        toolTipText = "Show only unviewed files and their folders"
         addActionListener { tab.view.showOnlyUnviewed = isSelected; refreshSummaries(tab) }
     }
 
-    private fun summaryVersionRow(tab: SummariesTab, content: SummariesCard, includeVersions: Boolean = true, includeUnviewed: Boolean = true): JComponent =
-        JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), scaled(4))).apply {
-            isOpaque = false
-            border = if (includeVersions) JBUI.Borders.empty(0, 12) else JBUI.Borders.empty()
-            // Versions are rare; their controls appear only once one exists or this tab reads one.
-            if (includeVersions && (summarySession.versions.isNotEmpty() || version(tab) != null)) addVersionControls(this, tab, content)
-            val request = contextSummaryRequest(tab)
-            add(JButton("Resummarize with context").apply {
-                name = "resummarize-with-context"
+    private fun summaryVersionRow(tab: SummariesTab, content: SummariesCard, includeVersions: Boolean = true, includeUnviewed: Boolean = true): JComponent {
+        // Versions are rare; their controls appear only once one exists or this tab reads one.
+        val versions = if (includeVersions && (summarySession.versions.isNotEmpty() || version(tab) != null)) versionControls(tab, content)
+            else emptyList()
+        val request = contextSummaryRequest(tab)
+        val search = mutableListOf<JComponent>()
+        search += tab.searchField.apply {
+            preferredSize = Dimension(scaled(260), preferredSize.height)
+            if (text != tab.view.fuzzy) text = tab.view.fuzzy
+        }
+        if (includeUnviewed) search += unviewedToggle(tab)
+        val buttons = listOf<JComponent>(
+            PillButton(
+                "Resummarize with context", "resummarize-with-context",
+                request?.let { "Rewrite only related summaries in the context of “${it.query}”, keeping a separate version" }
+                    ?: "Search related summaries to choose a query and the summaries to rewrite",
+            ).apply {
+                font = scaledFont(JBFont.small())
                 isEnabled = summaryActions.contextSummaries != null && content.canRun && request != null &&
                     !summaryGenerationRunning
-                toolTipText = request?.let { "Rewrite only related summaries in the context of “${it.query}”, keeping a separate version" }
-                    ?: "Search related summaries to choose a query and the summaries to rewrite"
                 addActionListener { startContextSummaries(tab) }
-            })
-            add(tab.searchField.apply {
-                preferredSize = Dimension(scaled(260), preferredSize.height)
-                if (text != tab.view.fuzzy) text = tab.view.fuzzy
-            })
-            if (includeUnviewed) add(unviewedToggle(tab))
-            add(JButton("Cancel search").apply {
-                name = "summaries-cancel-search"
+            },
+            PillButton(
+                "Cancel search", "summaries-cancel-search",
+                "Cancel the current search and clear highlights, selected words and all filters in this tab",
+            ).apply {
                 font = scaledFont(JBFont.small())
-                cursor = Cursor.getDefaultCursor()
-                toolTipText = "Cancel the current search and clear highlights, selected words and all filters in this tab"
                 addActionListener { cancelSearch(tab) }
-            })
+            },
+        )
+        return pillToolbarRow(versions, search, buttons).apply {
+            border = if (includeVersions) JBUI.Borders.empty(4, 12) else JBUI.Borders.empty()
         }
+    }
 
-    private fun addVersionControls(row: JPanel, tab: SummariesTab, content: SummariesCard) {
-        row.add(JLabel("Version"))
-        row.add(JComboBox<Any>((listOf("Original") + summarySession.versions).toTypedArray()).apply {
-            name = "summaries-version"
+    private fun versionControls(tab: SummariesTab, content: SummariesCard): List<JComponent> {
+        val controls = mutableListOf<JComponent>()
+        controls += PillComboBox<Any>(listOf<Any>("Original") + summarySession.versions, name = "summaries-version", prefix = "Version").apply {
+            font = scaledFont(JBFont.small())
             selectedItem = version(tab) ?: "Original"
-            maximumRowCount = 12
             val selected = version(tab)
             toolTipText = selected?.request?.query ?: "The ordinary summaries, without query context"
             preferredSize = Dimension(scaled(250), preferredSize.height)
@@ -461,9 +461,9 @@ internal class SummariesCanvasCards(
                 reading(tab)?.let { tab.trace.retain(it) }
                 refreshSummaries(tab)
             }
-        })
-        row.add(JButton("Delete version").apply {
-            name = "delete-summary-version"
+        }
+        controls += PillButton("Delete version", "delete-summary-version").apply {
+            font = scaledFont(JBFont.small())
             isEnabled = version(tab) != null || summaryActions.deleteOriginalSummaries != null && content.summaries.count > 0
             addActionListener {
                 val selected = version(tab)
@@ -479,16 +479,18 @@ internal class SummariesCanvasCards(
                 summaryTabs().forEach { refreshSummaries(it) }
                 actions.refreshTopics()
             }
-        })
+        }
         version(tab)?.let { selected ->
             val count = selected.request.nodeIds.count { selected.summaries.text(it) != null }
-            row.add(JLabel(selected.error ?: if (selected.running) "Resummarizing… $count of ${selected.request.nodeIds.size} summaries"
+            controls += JLabel(selected.error ?: if (selected.running) "Resummarizing… $count of ${selected.request.nodeIds.size} summaries"
                 else "$count of ${selected.request.nodeIds.size} summaries rewritten").apply {
                 name = "summary-version-status"
+                font = scaledFont(JBFont.small())
                 foreground = UIUtil.getContextHelpForeground()
                 toolTipText = text
-            })
+            }
         }
+        return controls
     }
 
     /** Page navigation stays above the scrolling summaries, independently of search breadcrumbs. */
@@ -658,12 +660,11 @@ internal class SummariesCanvasCards(
     }
 
     /** Open folders through the picked 1-based level and fold deeper folders. */
-    private fun summaryLevels(tab: SummariesTab, tree: ReviewSummaryTree, levels: Int): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-        isOpaque = false
+    private fun summaryLevels(tab: SummariesTab, tree: ReviewSummaryTree, levels: Int): JComponent {
         val summariesView = tab.view
-        val selector = JComboBox((1..levels).toList().toTypedArray()).apply {
-            name = "summary-level-selector"
+        return PillComboBox((1..levels).toList(), name = "summary-level-selector", prefix = "Level").apply {
             font = scaledFont(JBFont.small())
+            accessibleContext.accessibleName = "Level"
             selectedItem = (summariesView.shownLevel(tree) ?: summariesView.selectedLevel).coerceIn(1, levels)
             toolTipText = "Unfold folders through this level (root is level 1) and fold deeper folders"
             addActionListener {
@@ -671,11 +672,6 @@ internal class SummariesCanvasCards(
                 refreshSummaries(tab)
             }
         }
-        add(JLabel("Level").apply {
-            font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
-            labelFor = selector
-        })
-        add(selector)
     }
 
     fun update(content: SummariesCard?) {

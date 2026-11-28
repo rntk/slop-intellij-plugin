@@ -24,16 +24,17 @@ import dev.insight.review.WordScope
 import dev.insight.review.ui.CanvasExtension
 import dev.insight.review.ui.ChangeSummariesViewState
 import dev.insight.review.ui.ChangeSummaryActions
+import dev.insight.review.ui.PillButton
 import dev.insight.review.ui.SnapshotCanvasCards
 import dev.insight.review.ui.SummariesCard
 import dev.insight.review.ui.SummaryDiffView
+import dev.insight.review.ui.pillToolbarRow
 import dev.insight.review.wall.WallChats
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import kotlinx.coroutines.CoroutineScope
 import java.awt.BorderLayout
 import java.awt.Cursor
-import java.awt.FlowLayout
 import java.awt.event.MouseEvent
 import javax.swing.JButton
 import javax.swing.JLabel
@@ -194,12 +195,11 @@ internal class CodeCanvasCards(
                     "A word's size and color show how often it occurs; the most frequent sit in the middle. " +
                     "Click a word to open its files."
             }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-                isOpaque = false
-                add(wordScopeButton(page))
-                add(InplaceButton(IconButton("Remove words", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeWords() }
-                    .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.WEST)
+            add(pillToolbarRow(
+                listOf(wordScopeButton(page)),
+                listOf(InplaceButton(IconButton("Remove words", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeWords() }
+                    .apply { cursor = Cursor.getDefaultCursor() }),
+            ), BorderLayout.WEST)
         }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -220,11 +220,12 @@ internal class CodeCanvasCards(
     }
 
     /** Limits the cloud to one file or directory of the scope, chosen from a list that typing filters. */
-    private fun wordScopeButton(page: CodeWordsPage): JButton = JButton(page.scope.toString(), AllIcons.General.ArrowDown).apply {
-        name = "word-scope"
-        horizontalTextPosition = SwingConstants.LEFT
+    private fun wordScopeButton(page: CodeWordsPage): JButton = PillButton(
+        page.scope.toString(), "word-scope", "Count the words of one file or directory · type in the list to filter it",
+        AllIcons.General.ArrowDown,
+    ).apply {
         font = scaledFont(JBFont.small())
-        toolTipText = "Count the words of one file or directory · type in the list to filter it"
+        horizontalTextPosition = SwingConstants.LEADING
         addActionListener {
             JBPopupFactory.getInstance().createPopupChooserBuilder(page.scopes)
                 .setTitle("Words Scope")

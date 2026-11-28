@@ -64,9 +64,6 @@ import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.KeyboardFocusManager
 import com.intellij.ui.components.JBTextField
-import javax.swing.JButton
-import javax.swing.JCheckBox
-import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JMenuItem
@@ -249,27 +246,29 @@ internal class ChartsCanvasCard(
         val metric = view.lineMetric?.takeIf { it in metrics } ?: metrics.first()
         val chart by lazy { summaryRadar(content.tree, view.radarLevel, view.radarSymbols) }
         val width = scaled(RadarChartPanel.DEFAULT_WIDTH)
-        val chartOptions = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-            isOpaque = false
-            add(JComboBox(arrayOf(linesTitle, TREE, CIRCLES, "Radar")).apply {
-                name = "charts-type-selector"
-                accessibleContext.accessibleName = "Chart type"
-                font = scaledFont(JBFont.small())
-                selectedItem = when { lines -> linesTitle; tree -> TREE; circles -> CIRCLES; else -> "Radar" }
-                addActionListener { view.chart = selectedItem as String; refresh() }
-            })
-            if (radar && chart.levels > 1) add(radarLevels(chart))
-            if (radar && vocabulary == ReviewVocabulary.CODE) add(checkBox("Symbols", "charts-radar-symbols", view.radarSymbols,
-                "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines") {
-                view.radarSymbols = it
-            })
-            if (radar) add(checkBox("Log scale", "charts-radar-log", view.radarLog,
-                "Space the rings logarithmically, so small folders stay visible beside a large one") { view.radarLog = it })
-            close?.let { remove ->
-                add(InplaceButton(IconButton("Remove charts", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { remove() }
-                    .apply { cursor = Cursor.getDefaultCursor() })
-            }
-        }
+        val chartOptions = pillToolbarRow(
+            listOfNotNull(
+                PillComboBox(listOf(linesTitle, TREE, CIRCLES, "Radar"), name = "charts-type-selector", prefix = "Chart").apply {
+                    accessibleContext.accessibleName = "Chart type"
+                    font = scaledFont(JBFont.small())
+                    selectedItem = when { lines -> linesTitle; tree -> TREE; circles -> CIRCLES; else -> "Radar" }
+                    addActionListener { view.chart = selectedItem as String; refresh() }
+                },
+                if (radar && chart.levels > 1) radarLevels(chart) else null,
+            ),
+            listOfNotNull(
+                if (radar && vocabulary == ReviewVocabulary.CODE) checkBox("Symbols", "charts-radar-symbols", view.radarSymbols,
+                    "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines") {
+                    view.radarSymbols = it
+                } else null,
+                if (radar) checkBox("Log scale", "charts-radar-log", view.radarLog,
+                    "Space the rings logarithmically, so small folders stay visible beside a large one") { view.radarLog = it } else null,
+            ),
+            listOfNotNull(close?.let { remove ->
+                InplaceButton(IconButton("Remove charts", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { remove() }
+                    .apply { cursor = Cursor.getDefaultCursor() }
+            }),
+        )
         val inner = width - scaled(2 * PADDING + 4) - scaled(16)
         val hierarchy = if (tabbed) ReviewLineChart(content.tree, metric, outlines,
             only = view.searchResult?.files?.takeIf { metric == LineChartMetric.FOUND }) else null
@@ -596,7 +595,10 @@ internal class ChartsCanvasCard(
             weightx = if (search == null && board == null) 1.0 else 0.0
         }
         add(chartOptions, constraints)
-        board?.let { add(it.controls, constraints) }
+        board?.let {
+            add(ToolbarDivider(), constraints)
+            add(it.controls, constraints)
+        }
         constraints.weightx = 1.0
         if (search != null) add(search, constraints)
         else if (board != null) add(JPanel().apply { isOpaque = false }, constraints)
@@ -852,10 +854,12 @@ internal class ChartsCanvasCard(
                 override fun textChanged(e: javax.swing.event.DocumentEvent) { view.searchQuery = text }
             })
         }
-        val send = JButton(if (view.searchRunning) "Searching…" else "Send").apply {
-            name = "charts-search-send"
+        val send = PillButton(
+            if (view.searchRunning) "Searching…" else "Send", "charts-search-send",
+            "Ask the model which files match; the matches open in a Search tab", primary = true,
+        ).apply {
+            font = scaledFont(JBFont.small())
             isEnabled = !view.searchRunning
-            toolTipText = "Ask the model which files match; the matches open in a Search tab"
         }
         val start = {
             val query = field.text.trim()
@@ -966,11 +970,9 @@ internal class ChartsCanvasCard(
                     view.linesTagsCloud = it
                 }, BorderLayout.EAST)
             } else summaryEntryFill(content.summarySnapshot, node, summaryActions)?.let { fill ->
-                add(JButton(fill.label).apply {
-                    name = "charts-lines-generate-summary"
+                add(PillButton(fill.label, "charts-lines-generate-summary", "Generate a summary for ${node.location}", primary = true) { fill.run() }.apply {
+                    font = scaledFont(JBFont.small())
                     isEnabled = fill.enabled
-                    toolTipText = "Generate a summary for ${node.location}"
-                    addActionListener { fill.run() }
                 }, BorderLayout.EAST)
             }
         }, BorderLayout.NORTH)
@@ -995,13 +997,12 @@ internal class ChartsCanvasCard(
                     font = JBFont.label().asBold()
                     toolTipText = location
                 }, BorderLayout.CENTER)
-                if (summary == null) add(JButton(if (error == null) "Summarize" else "Retry").apply {
-                    name = "charts-lines-generate-symbol-summary"
+                if (summary == null) add(PillButton(if (error == null) "Summarize" else "Retry", "charts-lines-generate-symbol-summary", primary = error == null) {
+                    runSymbolTask(source, actions, generate = true)
+                    rebuildKeepingFocus()
+                }.apply {
+                    font = scaledFont(JBFont.small())
                     isEnabled = !pending
-                    addActionListener {
-                        runSymbolTask(source, actions, generate = true)
-                        rebuildKeepingFocus()
-                    }
                 }, BorderLayout.EAST)
             }, BorderLayout.NORTH)
             val status = when {
@@ -1067,34 +1068,23 @@ internal class ChartsCanvasCard(
     }
 
     private fun checkBox(text: String, name: String, selected: Boolean, tooltip: String, set: (Boolean) -> Unit) =
-        JCheckBox(text, selected).apply {
-            this.name = name
-            isOpaque = false
+        PillCheckBox(text, name, tooltip, selected).apply {
             font = scaledFont(JBFont.small())
-            cursor = Cursor.getDefaultCursor()
-            toolTipText = tooltip
             addActionListener { set(isSelected); refresh() }
         }
 
     /** The radar's folder level: 1 compares the root's entries, the last compares every file. */
-    private fun radarLevels(chart: RadarChart): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-        isOpaque = false
-        val selector = JComboBox((1..chart.levels).map { if (it == chart.levels) "Files" else "$it" }.toTypedArray()).apply {
-            name = "charts-radar-level-selector"
+    private fun radarLevels(chart: RadarChart): JComponent =
+        PillComboBox((1..chart.levels).map { if (it == chart.levels) "Files" else "$it" }, name = "charts-radar-level-selector", prefix = "Level",
+            tooltip = "Compare the folders at this level (the root's entries are level 1); Files compares every file").apply {
             font = scaledFont(JBFont.small())
+            accessibleContext.accessibleName = "Level"
             selectedIndex = chart.level - 1
-            toolTipText = "Compare the folders at this level (the root's entries are level 1); Files compares every file"
             addActionListener {
                 view.radarLevel = selectedIndex + 1
                 refresh()
             }
         }
-        add(JLabel("Level").apply {
-            font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
-            labelFor = selector
-        })
-        add(selector)
-    }
 
     private fun scaled(value: Int) = zoomScaled(value, zoom)
     private fun scaledFont(font: java.awt.Font) = font.zoomed(zoom)

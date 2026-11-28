@@ -21,7 +21,6 @@ import dev.insight.review.topicRadar
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
 import java.awt.BorderLayout
-import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import javax.swing.*
@@ -134,7 +133,7 @@ internal class TopicsCanvasCard(
         val header = JPanel(BorderLayout(scaled(8), 0)).apply {
             name = "topics-controls"
             isOpaque = false
-            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
+            border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(6, 12, 6, 8))
             val matching = if (view.filtering) " · ${shown.files.size} shown" else ""
             add(JLabel("${labels.title} · ${topics.groups.size} ${labels.plural} · ${topics.labels.size} of ${files(topics.files.size)}$matching").apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
@@ -142,50 +141,38 @@ internal class TopicsCanvasCard(
                 toolTipText = labels.tooltip
                 installReviewStatus(this, project, status ?: text)
             }, BorderLayout.CENTER)
-            add(JPanel(FlowLayout(FlowLayout.LEFT, scaled(4), 0)).apply {
-                isOpaque = false
-                if (document) add(controls)
-                if (outline.depth > 0) add(topicLevels(outline))
-                if (hierarchy) add(JCheckBox(if (vocabulary == ReviewVocabulary.CODE) "Show source" else "Show diffs", showHierarchyDiffs).apply {
-                    name = "topics-show-diffs"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Show file previews beside the hierarchy"
+            val smallFont = scaledFont(JBFont.small())
+            val toggles = buildList<JComponent> {
+                if (hierarchy) add(PillCheckBox(if (vocabulary == ReviewVocabulary.CODE) "Show source" else "Show diffs",
+                    "topics-show-diffs", "Show file previews beside the hierarchy", showHierarchyDiffs).apply {
+                    font = smallFont
                     addActionListener { showHierarchyDiffs = isSelected; canvasActions.refresh() }
                 })
-                if (radar && vocabulary == ReviewVocabulary.CODE) add(JCheckBox("Symbols", view.radarSymbols).apply {
-                    name = "topics-radar-symbols"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    toolTipText = "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines"
+                if (radar && vocabulary == ReviewVocabulary.CODE) add(PillCheckBox("Symbols", "topics-radar-symbols",
+                    "Compare PSI declarations (including constructors) and comment blocks; uncheck to compare lines", view.radarSymbols).apply {
+                    font = smallFont
                     addActionListener { view.radarSymbols = isSelected; canvasActions.refresh() }
                 })
-                if (radar) add(JCheckBox("Log scale", view.radarLog).apply {
-                    name = "topics-radar-log"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Space the rings logarithmically, so small ${labels.plural} stay visible beside a large one"
+                if (radar) add(PillCheckBox("Log scale", "topics-radar-log",
+                    "Space the rings logarithmically, so small ${labels.plural} stay visible beside a large one", view.radarLog).apply {
+                    font = smallFont
                     addActionListener { view.radarLog = isSelected; canvasActions.refresh() }
                 })
-                if (!radar) add(JCheckBox("Tags cloud", view.tagsCloud).apply {
-                    name = "topics-tags-cloud"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Size summary words by their importance in the child summaries or file source"
+                if (!radar) add(PillCheckBox("Tags cloud", "topics-tags-cloud",
+                    "Size summary words by their importance in the child summaries or file source", view.tagsCloud).apply {
+                    font = smallFont
                     addActionListener { view.tagsCloud = isSelected; canvasActions.refresh() }
                 })
-                add(JCheckBox("Show only unviewed", view.showOnlyUnviewed).apply {
-                    name = "topics-show-only-unviewed"
-                    isOpaque = false
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
-                    toolTipText = "Show only unviewed files and their ${labels.plural}"
+                add(PillCheckBox("Show only unviewed", "topics-show-only-unviewed",
+                    "Show only unviewed files and their ${labels.plural}", view.showOnlyUnviewed).apply {
+                    font = smallFont
                     addActionListener { view.showOnlyUnviewed = isSelected; canvasActions.refresh() }
                 })
-                add(viewSelector("topics-mode", ChangeTopicsMode.entries, view.mode, scaled(4), scaledFont(JBFont.small()),
+            }
+            val views = buildList<JComponent> {
+                if (document) add(controls)
+                if (outline.depth > 0) add(topicLevels(outline))
+                add(viewSelector("topics-mode", ChangeTopicsMode.entries, view.mode, 0, smallFont,
                     { when (it) { ChangeTopicsMode.DOCUMENT -> "Document"; ChangeTopicsMode.HIERARCHY -> "Hierarchy"; ChangeTopicsMode.RADAR -> "Radar" } },
                     { when (it) {
                         ChangeTopicsMode.DOCUMENT -> "Every file in ${labels.singular} order, with its summary and the ${labels.singular} rail"
@@ -194,35 +181,34 @@ internal class TopicsCanvasCard(
                     } }) {
                     view.mode = it; scroll = 0; canvasActions.refresh()
                 })
-                add(JButton(when {
+            }
+            val actions = buildList<JComponent> {
+                add(PillButton(when {
                     topics.labels.isEmpty() -> "Classify"
                     topics.complete -> "Regenerate"
                     else -> "Continue"
-                }).apply {
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
+                }, tooltip = if (topics.complete) "Classify every file again (${labels.command})" else "Give every remaining file a ${labels.singular} (${labels.command})",
+                    primary = true).apply {
+                    font = smallFont
                     isEnabled = content.canRun && topics.files.isNotEmpty()
-                    toolTipText = if (topics.complete) "Classify every file again (${labels.command})" else "Give every remaining file a ${labels.singular} (${labels.command})"
                     addActionListener { topicActions.generateTopics() }
                 })
-                add(JButton("Fill summaries").apply {
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
+                add(PillButton("Fill summaries",
+                    tooltip = "Fill missing summaries for every ${labels.singular} and sub${labels.singular}, including folded ${labels.plural}").apply {
+                    font = smallFont
                     isEnabled = content.canRun && !generationRunning && outline.nodes.isNotEmpty() && !content.topicSummaries.complete
-                    toolTipText = "Fill missing summaries for every ${labels.singular} and sub${labels.singular}, including folded ${labels.plural}"
                     addActionListener { topicActions.fillTopicSummaries() }
                 })
                 val summaries = content.summaries
-                if (summaries.total > 0 && !summaries.complete) add(JButton(if (summaries.count == 0) "Summarize" else "Continue summaries").apply {
-                    font = scaledFont(JBFont.small())
-                    cursor = Cursor.getDefaultCursor()
+                if (summaries.total > 0 && !summaries.complete) add(PillButton(if (summaries.count == 0) "Summarize" else "Continue summaries",
+                    tooltip = vocabulary.topicsSummarizeTooltip).apply {
+                    font = smallFont
                     isEnabled = content.canRun
-                    toolTipText = vocabulary.topicsSummarizeTooltip
                     addActionListener { summaryActions.summarize() }
                 })
-                add(InplaceButton(IconButton(labels.closeText, AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { topicActions.removeTopics() }
-                    .apply { cursor = Cursor.getDefaultCursor() })
-            }, BorderLayout.WEST)
+                add(InplaceButton(IconButton(labels.closeText, AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { topicActions.removeTopics() })
+            }
+            add(pillToolbarRow(toggles, views, actions), BorderLayout.WEST)
         }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
@@ -301,25 +287,18 @@ internal class TopicsCanvasCard(
     }
 
     /** Level n shows topic levels 1..n+1 and folds the rest, as in the article hierarchy; the last level shows every file. */
-    private fun topicLevels(outline: TopicOutline): JComponent = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-        isOpaque = false
-        val selector = JComboBox((0..outline.depth).map { level ->
-            if (level == outline.depth) "Files" else "${level + 1}"
-        }.toTypedArray()).apply {
-            name = "topic-level-selector"
-            font = scaledFont(JBFont.small())
-            selectedIndex = if (view.mode == ChangeTopicsMode.RADAR) view.radarLevel(outline) else view.effectiveLevel(outline)
-            toolTipText = if (view.mode == ChangeTopicsMode.DOCUMENT)
-                "Show topic rail levels through the selected level; Files shows every rail level"
-            else if (view.mode == ChangeTopicsMode.RADAR) "Compare the ${labels.plural} at the selected level; Files compares every file"
-            else "Show topic levels through the selected level; Files shows every topic and file"
-            addActionListener { view.selectLevel(selectedIndex, outline); canvasActions.refresh() }
-        }
-        add(JLabel("Levels").apply {
-            font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground(); border = JBUI.Borders.emptyRight(4)
-            labelFor = selector
-        })
-        add(selector)
+    private fun topicLevels(outline: TopicOutline): JComponent = PillComboBox(
+        (0..outline.depth).map { level -> if (level == outline.depth) "Files" else "${level + 1}" },
+        name = "topic-level-selector", prefix = "Level",
+        tooltip = if (view.mode == ChangeTopicsMode.DOCUMENT)
+            "Show topic rail levels through the selected level; Files shows every rail level"
+        else if (view.mode == ChangeTopicsMode.RADAR) "Compare the ${labels.plural} at the selected level; Files compares every file"
+        else "Show topic levels through the selected level; Files shows every topic and file",
+    ).apply {
+        font = scaledFont(JBFont.small())
+        selectedIndex = if (view.mode == ChangeTopicsMode.RADAR) view.radarLevel(outline) else view.effectiveLevel(outline)
+        accessibleContext.accessibleName = "Levels"
+        addActionListener { view.selectLevel(selectedIndex, outline); canvasActions.refresh() }
     }
 
     private fun cardWidth(default: Int) = scaled(default)

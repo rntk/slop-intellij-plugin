@@ -168,7 +168,7 @@ internal class ToolbarIconButton(
     override fun getMinimumSize(): Dimension = preferredSize
 
     override fun paintComponent(g: Graphics) {
-        if (model.isPressed || hovered) {
+        if (isEnabled && (model.isPressed || hovered)) {
             val g2 = configurePillGraphics(g)
             try {
                 val arc = JBUI.scale(8).toDouble()
