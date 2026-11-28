@@ -26,14 +26,14 @@ internal sealed interface SemanticResult {
     data class Ready(val changes: SemanticChanges) : SemanticResult
 }
 
-/** The three views of the semantic changes card. */
-internal enum class SemanticMode(val label: String) { METRICS("Metrics"), COMPLEXITY("Complexity"), CONSTRUCTS("Constructs") }
+/** The views of the semantic changes card. */
+internal enum class SemanticMode(val label: String) { METRICS("Metrics"), COMPLEXITY("Complexity") }
 
 /** The metrics the complexity scatter can plot per function. */
 internal val COMPLEXITY_METRICS = listOf(Metric.CYCLOMATIC, Metric.COGNITIVE, Metric.MAX_NESTING, Metric.CODE_LINES, Metric.PARAMETERS, Metric.FAN_OUT)
 
 /**
- * Construct metrics as words for the word cloud: a construct is removed as often as declarations lost it and added as
+ * Construct metrics as words for the Constructs view of Words: a construct is removed as often as declarations lost it and added as
  * often as declarations gained it. Files without declarations count by their own change. Constructs that did not change are omitted.
  */
 internal fun constructChanges(changes: SemanticChanges): WordChanges {

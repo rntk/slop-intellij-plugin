@@ -34,10 +34,12 @@ internal data class MetricsCanvasActions(
     val removeWords: () -> Unit = {},
     val removeSemantic: () -> Unit = {},
     val removeMoves: () -> Unit = {},
+    /** Asks for the semantic count the Constructs view of Words needs; the canvas is rebuilt once it is delivered. */
+    val requestConstructs: () -> Unit = {},
     val refresh: (CanvasTabKey) -> Unit,
 )
 
-/** Word changes, diff overview, semantic metrics and moved code, including their cached charts and view choices. */
+/** Word changes, diff overview, constructs, semantic metrics and moved code, including their cached charts and view choices. */
 internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, private val project: Project? = null) {
     private var wordFiles = emptyList<ReviewFile>()
     private var semantic: SemanticResult? = null
@@ -49,7 +51,9 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
     private var semanticMode = SemanticMode.METRICS
     private var semanticMetric = Metric.CYCLOMATIC
     private var semanticChart: SemanticComplexityChart? = null
-    private var constructChart: Pair<SemanticChanges, WordChangeChart>? = null
+    /** The semantic count behind the Constructs view of Words; null until that view asks for it. */
+    private var constructs: SemanticResult? = null
+    private var constructChart: ConstructChart? = null
     /** The file or directory the chart counts; kept while the snapshot still changes files in it. */
     private var wordScope = WordScope("", true, 0)
     /** The words of [wordScope], counted again only when the scope or the snapshot's words change. */
@@ -60,28 +64,40 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
     private var moveSelection: MoveSelection? = null
     private var moveDetail: Pair<CodeMoves, CodeMoveDetail>? = null
 
-    fun update(files: List<ReviewFile>, semantic: SemanticResult?, moves: CodeMoves?) {
+    fun update(files: List<ReviewFile>, semantic: SemanticResult?, moves: CodeMoves?, constructs: SemanticResult? = null) {
         wordFiles = files
         this.semantic = semantic
+        this.constructs = constructs
         if (moveDetail?.first !== moves) releaseMoveDetail()
     }
 
-    /** Words of the removed and added lines, counted from the snapshot; a word opens the diffs of its files. */
+    /**
+     * Words of the removed and added lines, counted from the snapshot, or the source constructs counted on both sides
+     * of the files; a word or construct opens the diffs of its files.
+     */
     fun wordsCard(all: WordChanges): JPanel {
+        if (wordView == WordView.CONSTRUCTS && constructs == null) wordView = WordView.CHANGES
         val overview = wordView == WordView.OVERVIEW
+        val constructView = wordView == WordView.CONSTRUCTS
         val width = scaled(WORDS_WIDTH)
         val scopes = wordScopes(wordFiles)
         wordScope = scopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: scopes.first()
         val words = if (wordScope.path.isEmpty()) all
             else scopedWords?.takeIf { it.all === all && it.scope == wordScope }?.words
                 ?: wordChanges(wordFiles.filter { wordScope.contains(it.path) }).also { scopedWords = ScopedWords(all, wordScope, it) }
+        val shown = if (constructView) (constructs as? SemanticResult.Ready)?.let { constructChart(it.changes, width - scaled(2 * PADDING + 4)) } else null
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
-            add(JLabel(if (overview) "Diff overview · Deleted and added lines, and word balance"
-                else "Word changes · ${words.words.size} most frequent words of the changed lines").apply {
+            add(JLabel(when {
+                constructView -> "Constructs · ${shown?.changes?.words?.size ?: 0} source constructs added or removed"
+                overview -> "Diff overview · Deleted and added lines, and word balance"
+                else -> "Word changes · ${words.words.size} most frequent words of the changed lines"
+            }).apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
-                toolTipText = "Counted from the removed and added lines of the snapshot; context lines are not counted. " +
+                toolTipText = if (constructView) "Source constructs (if, loop, return, literals, TODOs…) counted on both sides of the changed files. " +
+                    "A construct's position compares how often declarations lost and gained it, its size how much it changed. Click one to open its files' diffs."
+                else "Counted from the removed and added lines of the snapshot; context lines are not counted. " +
                     (if (overview) "Compact word lists fill opposite corners, longest first. The middle chart compares deleted and added line counts, including blank lines. "
                     else "A word's position compares its share of removed and added words, its size how often it occurs. ") +
                     "Click a word to open its files' diffs."
@@ -91,7 +107,8 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
                 listOf(viewSelector("words-view", WordView.entries, wordView, 0, scaledFont(JBFont.small()),
                     WordView::label, WordView::hint) {
                     wordView = it
-                    actions.refresh(CanvasTabKey.Words)
+                    if (it == WordView.CONSTRUCTS && constructs == null) actions.requestConstructs()
+                    else actions.refresh(CanvasTabKey.Words)
                 }),
                 listOf(InplaceButton(IconButton("Remove words", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { actions.removeWords() }
                     .apply { cursor = Cursor.getDefaultCursor() }),
@@ -100,7 +117,8 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
-            add(if (words.words.isEmpty() && !overview) JLabel("No words in the changed lines.").apply { foreground = UIUtil.getContextHelpForeground() }
+            add(if (constructView) constructBody(this@MetricsCanvasCards.constructs, shown)
+                else if (words.words.isEmpty() && !overview) JLabel("No words in the changed lines.").apply { foreground = UIUtil.getContextHelpForeground() }
                 else if (overview) diffOverviewChart?.takeIf { it.changes === words }
                     ?: DiffOverviewChart(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT), ::openWordDiff).also { diffOverviewChart = it }
                 else wordChart?.takeIf { it.changes === words }
@@ -119,9 +137,27 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
         }
     }
 
+    private fun note(text: String) = JLabel(text).apply { foreground = UIUtil.getContextHelpForeground() }
+
+    private fun constructBody(result: SemanticResult?, chart: ConstructChart?): JComponent = when (result) {
+        null, SemanticResult.Counting -> note("Counting…").apply { name = "semantic-counting" }
+        is SemanticResult.Failed -> note("Could not count constructs: ${result.message}").apply {
+            name = "semantic-error"; foreground = JBColor.RED
+        }
+        is SemanticResult.Ready -> chart?.chart ?: note("No construct was added or removed.")
+    }
+
+    /** The construct chart of [changes] limited to [wordScope], rebuilt only when either changes. */
+    private fun constructChart(changes: SemanticChanges, width: Int): ConstructChart =
+        constructChart?.takeIf { it.source === changes && it.scope == wordScope } ?: run {
+            val scoped = if (wordScope.path.isEmpty()) changes else SemanticChanges(changes.files.filter { wordScope.contains(it.path) })
+            val words = constructChanges(scoped)
+            ConstructChart(changes, wordScope, words, if (words.words.isEmpty()) null else WordChangeChart(words, width, scaled(WORDS_HEIGHT), ::openWordDiff))
+        }.also { constructChart = it }
+
     /**
-     * Semantic metrics counted from both sides of the changed files, as a delta table, a scatter of function complexity
-     * or a cloud of the constructs added and removed. The mode and the plotted metric survive rebuilds.
+     * Semantic metrics counted from both sides of the changed files, as a delta table or a scatter of function complexity.
+     * The mode and the plotted metric survive rebuilds.
      */
     fun semanticCard(result: SemanticResult): JPanel {
         val width = scaled(WORDS_WIDTH)
@@ -137,7 +173,6 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
                         when (mode) {
                             SemanticMode.METRICS -> "Totals of each metric before and after the change; click a row to open the diffs of its files"
                             SemanticMode.COMPLEXITY -> "Each function's value before and after the change; click a point to open its diff"
-                            SemanticMode.CONSTRUCTS -> "Source constructs removed on the left and added on the right; click one to open its diffs"
                         }
                     }) { semanticMode = it; actions.refresh(CanvasTabKey.Semantic) })
                 } else add(JLabel("Semantic changes").apply { font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground() })
@@ -164,7 +199,6 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
             }, BorderLayout.WEST)
         }
         val chartWidth = width - scaled(2 * PADDING + 4)
-        fun note(text: String) = JLabel(text).apply { foreground = UIUtil.getContextHelpForeground() }
         val body = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
@@ -181,11 +215,6 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
                         (semanticChart?.takeIf { it.changes === result.changes && it.metric == semanticMetric }
                             ?: SemanticComplexityChart(result.changes, semanticMetric, chartWidth, scaled(WORDS_HEIGHT), ::openDeclarationDiff)
                                 .also { semanticChart = it }).let { if (it.hasFunctions()) it else note("No functions in the changed files.") }
-                    SemanticMode.CONSTRUCTS -> constructChart?.takeIf { it.first === result.changes }?.second
-                        ?: constructChanges(result.changes).let { constructs ->
-                            if (constructs.words.isEmpty()) note("No construct was added or removed.")
-                            else WordChangeChart(constructs, chartWidth, scaled(WORDS_HEIGHT), ::openWordDiff).also { constructChart = result.changes to it }
-                        }
                 }
             }, BorderLayout.CENTER)
         }
@@ -361,9 +390,13 @@ internal class MetricsCanvasCards(private val actions: MetricsCanvasActions, pri
     /** The word changes of [scope], memoized while the unscoped changes stay [all]. */
     private data class ScopedWords(val all: WordChanges, val scope: WordScope, val words: WordChanges)
 
+    /** The constructs of [source] within [scope] and their chart; the chart is null when none changed. */
+    private class ConstructChart(val source: SemanticChanges, val scope: WordScope, val changes: WordChanges, val chart: WordChangeChart?)
+
     private enum class WordView(val label: String, val hint: String) {
         CHANGES("Word changes", "Compare how often words occur in added and removed lines"),
         OVERVIEW("Diff overview", "Compare line counts and see how vocabulary shifted"),
+        CONSTRUCTS("Constructs", "Source constructs removed on the left and added on the right"),
     }
 
     private companion object {

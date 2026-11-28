@@ -47,7 +47,7 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
         assertTrue(constructChanges(SemanticChanges(emptyList())).words.isEmpty())
     }
 
-    fun testCanvasShowsCardInItsOwnTabWithThreeModesAndKeepsTheMode() {
+    fun testCanvasShowsCardInItsOwnTabWithTwoModesAndKeepsTheMode() {
         val opened = mutableListOf<String>()
         val directories = mutableListOf<List<String>>()
         val files = listOf(file("a.kt"), file("b.kt"))
@@ -58,7 +58,7 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
             assertEquals(1, canvas.tabs.tabCount)
             assertEquals("Semantic changes", canvas.tabs.getTitleAt(0))
             val modes = descendants(canvas).filterIsInstance<javax.swing.JComboBox<*>>().single { it.name == "semantic-mode" }
-            assertEquals(listOf("Metrics", "Complexity", "Constructs"), (0 until modes.itemCount).map { (modes.getItemAt(it) as SemanticMode).label })
+            assertEquals(listOf("Metrics", "Complexity"), (0 until modes.itemCount).map { (modes.getItemAt(it) as SemanticMode).label })
             assertEquals("1 file skipped", descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-skipped" }.text)
             assertTrue(descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-skipped" }.toolTipText.contains("logo.png"))
 
@@ -83,10 +83,34 @@ class SemanticChangesViewTest : BasePlatformTestCase() {
             selector.selectedItem = Metric.CODE_LINES
             assertEquals(Metric.CODE_LINES, descendants(canvas).filterIsInstance<SemanticComplexityChart>().single().metric)
 
-            selectView(descendants(canvas), "semantic-mode", "CONSTRUCTS")
+            assertTrue("constructs moved to Words", descendants(canvas).none { it is WordChangeChart })
+        } finally { canvas.dispose() }
+    }
+
+    fun testWordsOffersConstructsAfterRequestingTheCountAndScopesThem() {
+        val requested = mutableListOf<Unit>()
+        val opened = mutableListOf<String>()
+        val files = listOf(file("a.kt"), file("b.kt"))
+        val words = WordChanges(listOf(WordChange("x", 1, 1, setOf("a.kt"))), 1, 1)
+        val cards = DiffCanvasCards({ opened += it }, metricActions = MetricCardActions(requestConstructs = { requested += Unit }))
+        val canvas = NoteCanvas({ opened += it }, {}, extension = cards).apply { setSize(1200, 800) }
+        try {
+            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = files))
+            val views = { descendants(canvas).filterIsInstance<JComboBox<*>>().single { it.name == "words-view" } }
+            assertEquals(3, views().itemCount)
+            views().selectedIndex = 2
+            assertEquals("choosing Constructs asks for the count", 1, requested.size)
+
+            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = files, constructs = SemanticResult.Counting))
+            assertEquals("Counting…", descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-counting" }.text)
+
+            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = files, constructs = SemanticResult.Ready(changes)))
             assertEquals(listOf("if", "TODO", "loop"), descendants(canvas).filterIsInstance<WordChangeChart>().single().changes.words.map { it.word })
-            canvas.showNotes(cards, DiffCanvasContent(wordFiles = files, semantic = SemanticResult.Ready(changes)))
-            assertEquals("the mode survives a rebuild", 1, descendants(canvas).filterIsInstance<WordChangeChart>().size)
+            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = files, constructs = SemanticResult.Ready(changes)))
+            assertEquals("the view survives a rebuild", 1, descendants(canvas).filterIsInstance<WordChangeChart>().size)
+
+            canvas.showNotes(cards, DiffCanvasContent(words = words, wordFiles = files, constructs = SemanticResult.Failed("boom")))
+            assertEquals("Could not count constructs: boom", descendants(canvas).filterIsInstance<JLabel>().single { it.name == "semantic-error" }.text)
         } finally { canvas.dispose() }
     }
 

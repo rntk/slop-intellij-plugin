@@ -41,6 +41,7 @@ internal data class MetricCardActions(
     val removeWords: () -> Unit = {},
     val removeSemantic: () -> Unit = {},
     val removeMoves: () -> Unit = {},
+    val requestConstructs: () -> Unit = {},
 )
 
 /** Content of the diff review's own canvas pages, alongside the shared canvas state. */
@@ -49,6 +50,8 @@ internal data class DiffCanvasContent(
     val words: WordChanges? = null,
     val wordFiles: List<ReviewFile> = emptyList(),
     val semantic: SemanticResult? = null,
+    /** The semantic count for the Constructs view of Words; null until that view is chosen. */
+    val constructs: SemanticResult? = null,
     val moves: CodeMoves? = null,
     val wall: DiffsWallContent? = null,
     val walkthrough: WalkthroughContent? = null,
@@ -140,7 +143,7 @@ internal class DiffCanvasCards(
     private val metricsCards = MetricsCanvasCards(MetricsCanvasActions(
         open = open, openDirectoryDiff = openDirectoryDiff, openOnWall = openMovesOnWall, removeWords = metricActions.removeWords,
         removeSemantic = metricActions.removeSemantic,
-        removeMoves = metricActions.removeMoves, refresh = { refresh(it) },
+        removeMoves = metricActions.removeMoves, requestConstructs = metricActions.requestConstructs, refresh = { refresh(it) },
     ), project)
 
     override fun attach(refresh: (CanvasTabKey) -> Unit) {
@@ -157,7 +160,7 @@ internal class DiffCanvasCards(
     }
 
     override fun update() {
-        metricsCards.update(content.wordFiles, content.semantic, content.moves)
+        metricsCards.update(content.wordFiles, content.semantic, content.moves, content.constructs)
         val diffsByKey = content.diffs.associateBy { it.diffKey }
         diffEditors.entries.removeIf { (key, editor) ->
             (diffsByKey[key] != editor.file).also { if (it) Disposer.dispose(editor) }

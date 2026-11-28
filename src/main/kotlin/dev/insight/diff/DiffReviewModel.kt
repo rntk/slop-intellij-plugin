@@ -97,6 +97,15 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
         semanticVisible = true
     }
     fun hideSemantic() { semanticVisible = false }
+    /** Whether the Constructs view of Words asked for the semantic count; it shares the count of the Metrics card. */
+    var constructsRequested = false
+        private set
+    fun requestConstructs() {
+        if (semantic is SemanticResult.Failed) semanticCounted = null
+        constructsRequested = true
+    }
+    /** Whether the semantic count is wanted by a visible card. */
+    internal val semanticWanted: Boolean get() = semanticVisible || (wordsVisible && constructsRequested)
     /** Whether the moved-code chart is on the canvas; found from the current snapshot's patches when first needed. */
     var movesVisible = false
         private set
@@ -171,7 +180,7 @@ class DiffReviewState(paths: Set<String>? = null, cache: ReviewDiskCache? = null
     override fun clearNotes() {
         super.clearNotes()
         diffCards.clear()
-        wordsVisible = false; semanticVisible = false; movesVisible = false
+        wordsVisible = false; semanticVisible = false; constructsRequested = false; movesVisible = false
         walkthroughVisible = false
         wallScope = null
     }

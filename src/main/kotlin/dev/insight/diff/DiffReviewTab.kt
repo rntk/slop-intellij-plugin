@@ -149,6 +149,7 @@ internal class DiffReviewTab(
         metricActions = MetricCardActions(
             removeWords = { state.hideWords(); renderCanvas() },
             removeSemantic = { state.hideSemantic(); renderCanvas() },
+            requestConstructs = { state.requestConstructs(); renderCanvas() },
             removeMoves = { state.hideMoves(); renderCanvas() },
         ),
         openWallDiff = { file, line -> openWallDiff(project, file, line, ::diffSession) },
@@ -266,9 +267,9 @@ internal class DiffReviewTab(
         ReviewViewOption(CanvasTabKey.Wall, ReviewVocabulary.DIFF.wallName,
             "Lay out every changed file's raw diff as a movable block on one canvas") { listOf(countStat(state.snapshot.files.size, "file")) },
         ReviewViewOption(CanvasTabKey.Words, "Words",
-            "Explore added and removed words, line counts, and vocabulary balance") { lineStats() },
+            "Explore added and removed words and source constructs, line counts, and vocabulary balance") { lineStats() },
         ReviewViewOption(CanvasTabKey.Semantic, "Metrics",
-            "Count code metrics from both sides of every changed file: totals, function complexity before and after, and added or removed constructs") {
+            "Count code metrics from both sides of every changed file: totals and function complexity before and after") {
             state.readySemantic?.let { listOf(countStat(it.declarations.size, "function counted", "functions counted")) }.orEmpty()
         },
         ReviewViewOption(CanvasTabKey.Moves, "Moves",
@@ -692,7 +693,7 @@ internal class DiffReviewTab(
 
     private fun countSemantic() {
         val files = state.snapshot.files
-        if (!state.semanticVisible || !state.semanticPending || semanticCounting === files) return
+        if (!state.semanticWanted || !state.semanticPending || semanticCounting === files) return
         semanticJob?.cancel()
         semanticCounting = files
         semanticJob = scope.launch {
@@ -740,7 +741,8 @@ internal class DiffReviewTab(
         val snapshot = summarySnapshot()
         diffCards.content = DiffCanvasContent(state.diffs, words = if (state.wordsVisible) state.words else null,
             wordFiles = state.snapshot.files,
-            semantic = if (state.semanticVisible) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
+            semantic = if (state.semanticVisible) state.semantic else null,
+            constructs = if (state.wordsVisible && state.constructsRequested) state.semantic else null, moves = if (state.movesVisible) state.moves else null,
             wall = state.wallScope?.let { DiffsWallContent(it, state.wallFiles, snapshot.files) },
             walkthrough = walkthroughContent())
         canvas.showNotes(CanvasState(state.notes, state.sources, summariesCard(snapshot), topicsCard(), explanation = explanations.result, grouping = groupingCard(),
