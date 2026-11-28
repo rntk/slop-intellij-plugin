@@ -10,8 +10,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.ui.popup.IconButton
-import com.intellij.openapi.ui.popup.JBPopup
-import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
 import com.intellij.ui.OnePixelSplitter
@@ -23,6 +21,10 @@ import com.intellij.util.ui.JBFont
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import dev.insight.graph.RelationKind
+import dev.insight.review.PreviewPlacement
+import dev.insight.review.PreviewSide
+import dev.insight.review.headingToPreview
+import dev.insight.review.treePreviewPlacement
 import dev.insight.review.CodeSnippet
 import dev.insight.review.TreeConnectionOccurrence
 import dev.insight.review.TreeConnectionSite
@@ -45,8 +47,10 @@ import java.awt.MouseInfo
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
+import java.awt.event.ActionEvent
+import java.awt.event.KeyEvent
+import javax.swing.AbstractAction
+import javax.swing.KeyStroke
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
@@ -57,8 +61,9 @@ import javax.swing.SwingUtilities
 import javax.swing.Timer
 
 /**
- * Floating preview panel showing short, visually separated source-code snippets from both files
+ * Floating preview window showing short, visually separated source-code snippets from both files
  * for every resolved occurrence (calls, usages, inheritance, imports) of a Tree connection link.
+ * Like the source preview, it docks to the board's edge beside the linked row and can be pinned and resized.
  */
 internal class TreeConnectionPreviewPanel(
     private val fromPath: String,
@@ -70,16 +75,72 @@ internal class TreeConnectionPreviewPanel(
     private val onClose: () -> Unit = {},
     project: Project? = null,
     explain: (suspend () -> String)? = null,
+    private val onTogglePin: () -> Unit = {},
+    onResize: (dx: Int, done: Boolean) -> Unit = { _, _ -> },
+    private val onEscape: () -> Unit = {},
 ) : JPanel(BorderLayout()) {
 
     internal var onExplanationShown: () -> Unit = {}
 
-    private val explanation = if (pinned && project != null && explain != null) {
-        TreeConnectionExplanationPanel(project, site, explain) { onExplanationShown() }
+    val pair: Pair<String, String> get() = fromPath to toPath
+
+    // Asking for an explanation pins the window, so the answer doesn't vanish when the pointer moves on.
+    private val explanation = if (project != null && explain != null) {
+        TreeConnectionExplanationPanel(project, site, explain, onRequest = { if (!isPinned) onTogglePin() }) { onExplanationShown() }
     } else null
+
+    private val entries = site.occurrences.ifEmpty {
+        listOf(TreeConnectionOccurrence(RelationKind.REFERENCE, site.fromLine, site.toLine))
+    }
+    private val total = maxOf(site.totalOccurrences, entries.size)
+
+    private val summaryLabel = JLabel().apply {
+        name = "charts-tree-connection-summary"
+        font = JBFont.small()
+        foreground = UIUtil.getContextHelpForeground()
+    }
+
+    private val pinButton = InplaceButton(IconButton("Pin preview", AllIcons.General.Pin_tab, AllIcons.General.Pin_tab)) {
+        onTogglePin()
+    }.apply {
+        name = "charts-tree-connection-pin"
+        cursor = Cursor.getDefaultCursor()
+    }
+
+    private val grip = PreviewResizeGrip("charts-tree-connection-grip", { isPinned }, onResize)
+
+    private lateinit var header: JPanel
+
+    var isPinned: Boolean = pinned
+        set(value) {
+            field = value
+            updatePinned()
+        }
+
+    var side: PreviewSide = PreviewSide.RIGHT
+        set(value) {
+            if (field == value) return
+            field = value
+            grip.side = value
+            remove(grip)
+            add(grip, if (value == PreviewSide.RIGHT) BorderLayout.WEST else BorderLayout.EAST)
+            revalidate()
+        }
 
     fun cancelExplanation() {
         explanation?.cancel()
+    }
+
+    /** Distance from the window's top to its title's middle, to line the title up with the linked row. */
+    fun titleCenter(): Int = insets.top + header.preferredSize.height / 2
+
+    private fun updatePinned() {
+        summaryLabel.text = summaryText(entries, total, isPinned)
+        val icon = if (isPinned) AllIcons.General.PinSelected else AllIcons.General.Pin_tab
+        pinButton.setIcons(icon, null, icon)
+        pinButton.toolTipText = if (isPinned) "Unpin preview (or click the link again)" else "Pin preview (or click the link), so it stays while you explore"
+        if (::header.isInitialized) header.background = if (isPinned) TreeSourcePreviewPanel.pinnedHeaderColor else TreeSourcePreviewPanel.headerColor
+        repaint()
     }
 
     private val listPanel = JPanel(VerticalLayout(JBUI.scale(8))).apply {
@@ -102,20 +163,21 @@ internal class TreeConnectionPreviewPanel(
         isOpaque = true
         background = UIUtil.getListBackground()
         border = JBUI.Borders.customLine(JBColor.border(), 1)
+        getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "charts-tree-connection-escape")
+        actionMap.put("charts-tree-connection-escape", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent) = onEscape()
+        })
 
-        val entries = site.occurrences.ifEmpty {
-            listOf(TreeConnectionOccurrence(RelationKind.REFERENCE, site.fromLine, site.toLine))
-        }
-        val total = maxOf(site.totalOccurrences, entries.size)
         val fromName = fileName(fromPath)
         val toName = fileName(toPath)
 
-        val header = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+        header = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+            name = "charts-tree-connection-header"
             isOpaque = true
-            background = JBColor(Color(0xF3F5F8), Color(0x2B2D30))
+            background = TreeSourcePreviewPanel.headerColor
             border = JBUI.Borders.compound(
                 JBUI.Borders.customLineBottom(JBColor.border()),
-                JBUI.Borders.empty(6, 10),
+                JBUI.Borders.empty(6, 10, 6, 4),
             )
             val titleRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
                 isOpaque = false
@@ -124,11 +186,7 @@ internal class TreeConnectionPreviewPanel(
                     font = JBFont.label().asBold()
                     toolTipText = "$fromPath → $toPath"
                 })
-                add(JLabel(summaryText(entries, total, pinned)).apply {
-                    name = "charts-tree-connection-summary"
-                    font = JBFont.small()
-                    foreground = UIUtil.getContextHelpForeground()
-                })
+                add(summaryLabel)
             }
             val actionsRow = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
                 isOpaque = false
@@ -143,7 +201,8 @@ internal class TreeConnectionPreviewPanel(
                         toolTipText = "Open context picker for both files"
                     })
                 }
-                add(InplaceButton(IconButton("Close preview", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
+                add(pinButton)
+                add(InplaceButton(IconButton("Close preview (Esc)", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) {
                     onClose()
                 }.apply {
                     name = "charts-tree-connection-close"
@@ -167,6 +226,8 @@ internal class TreeConnectionPreviewPanel(
         }
 
         add(header, BorderLayout.NORTH)
+        add(grip, BorderLayout.WEST)
+        updatePinned()
         if (explanation != null) {
             val splitter = OnePixelSplitter(true, EXPLANATION_SPLIT_PROPORTION).apply {
                 name = "charts-tree-connection-split"
@@ -186,8 +247,7 @@ internal class TreeConnectionPreviewPanel(
         val height = if (explanation?.isVisible == true) {
             raw.height.coerceIn(JBUI.scale(EXPLANATION_MIN_HEIGHT), JBUI.scale(EXPLANATION_MAX_HEIGHT))
         } else {
-            val minHeight = if (explanation != null) JBUI.scale(300) else 0
-            raw.height.coerceIn(minHeight, JBUI.scale(MAX_HEIGHT))
+            raw.height.coerceAtMost(JBUI.scale(MAX_HEIGHT))
         }
         return Dimension(width, height)
     }
@@ -353,6 +413,7 @@ private class TreeConnectionExplanationPanel(
     private val project: Project,
     private val site: TreeConnectionSite,
     private val explain: suspend () -> String,
+    private val onRequest: () -> Unit = {},
     private val onShown: () -> Unit = {},
 ) : JPanel(BorderLayout()) {
     private val scope = project.service<LinkedTextLinks>().coroutineScope
@@ -376,6 +437,7 @@ private class TreeConnectionExplanationPanel(
 
     private fun requestExplanation() {
         if (request?.isActive == true || project.isDisposed) return
+        onRequest()
         button.isEnabled = false
         showStatus("Explaining connection…")
         request = scope.launch(Dispatchers.EDT) {
@@ -504,172 +566,236 @@ internal class SnippetCodeView(private val snippet: CodeSnippet) : JComponent() 
     }
 }
 
+/** A Tree link whose occurrences the floating link window shows; [linkedPath] is the row at its far end. */
+internal data class TreeConnectionTarget(val from: String, val to: String, val site: TreeConnectionSite, val linkedPath: String) {
+    val pair: Pair<String, String> get() = from to to
+}
+
 /**
- * Coordinates hover-delayed and click-pinned [TreeConnectionPreviewPanel] popups for [TreeBoardPanel].
- * Tracks the active panel state even in headless tests where [owner] is not showing.
+ * Decides which Tree link the floating link window shows and where, the same way [TreeSourcePreviewController] does
+ * for rows: the window docks to the board's edge beside the linked row, follows the hovered link after a short wait,
+ * waits longer while the pointer heads for it, and stays while the pointer is inside. Clicking a link pins its window
+ * until the reader clicks the link again, closes the window, or presses Escape.
  */
 internal class TreeConnectionPreviewController(
-    private val owner: JComponent,
+    private val host: JComponent,
     private val openAt: ((String, Int) -> Unit)? = null,
     private val openContext: ((String, String, TreeConnectionSite, RelativePoint) -> Unit)? = null,
     private val project: Project? = null,
     private val explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
+    /** The link's anchor bounds on [host], or null while it is hidden. */
+    private val anchorBounds: (TreeConnectionTarget) -> Rectangle? = { null },
+    /** Returns keyboard focus to the board, on Escape inside the window. */
+    private val escape: () -> Unit = {},
+    private val changed: () -> Unit = {},
 ) : Disposable {
+    private var hovered: TreeConnectionTarget? = null
+    var pinned: TreeConnectionTarget? = null
+        private set
+    private var dismissed: Pair<String, String>? = null
+    private var preferredWidth: Int? = null
+    private var target: TreeConnectionTarget? = null
 
+    /** The window on the board, if any. */
     var activePanel: TreeConnectionPreviewPanel? = null
         private set
-    var activePair: Pair<String, String>? = null
+    var placement: PreviewPlacement? = null
         private set
-    var isPinned: Boolean = false
-        private set
+    val activePair: Pair<String, String>? get() = activePanel?.pair
+    val isPinned: Boolean get() = pinned != null && pinned?.pair == activePair
 
-    private var popup: JBPopup? = null
-    private var pendingHover: (() -> Unit)? = null
+    private var lastAnchor: Rectangle? = null
+    private var lastPointer: Point? = null
+    private var headingToWindow = false
+    private val timer = Timer(0) { apply() }.apply { isRepeats = false }
 
-    private val showTimer = Timer(HOVER_SHOW_DELAY_MS) {
-        pendingHover?.invoke()
-    }.apply {
-        isRepeats = false
-    }
+    private fun desired(): TreeConnectionTarget? =
+        (pinned ?: hovered)?.takeUnless { it.pair == dismissed && it.pair != pinned?.pair }
 
-    private val hideTimer = Timer(HOVER_HIDE_DELAY_MS) {
-        if (!isPinned && !isPointerInsidePopup()) hide()
-    }.apply {
-        isRepeats = false
-    }
-
-    fun scheduleHover(from: String, to: String, site: TreeConnectionSite, anchor: Point) {
-        if (isPinned) return
-        val pair = from to to
-        if (activePair == pair && activePanel != null) {
-            hideTimer.stop()
+    /** Follows the hovered link, or none; a change waits for the reader to settle on a link. */
+    fun track(hover: TreeConnectionTarget?) {
+        if (hover?.pair == hovered?.pair) return
+        hovered = hover
+        if (dismissed != null && hover?.pair != dismissed) dismissed = null
+        if (pinned != null) return
+        val next = desired()
+        if (next?.pair == activePair) {
+            timer.stop()
             return
         }
-        hideTimer.stop()
-        pendingHover = { showPreview(from, to, site, anchor, pinned = false) }
-        showTimer.restart()
+        schedule(when {
+            headingToWindow && activePanel != null -> TreeSourcePreviewController.HOLD_DELAY_MS
+            next == null -> TreeSourcePreviewController.LEAVE_DELAY_MS
+            activePanel == null -> TreeSourcePreviewController.OPEN_DELAY_MS
+            else -> TreeSourcePreviewController.SWITCH_DELAY_MS
+        })
     }
 
-    fun onHoverCleared() {
-        showTimer.stop()
-        pendingHover = null
-        if (!isPinned && activePanel != null) {
-            hideTimer.restart()
-        }
+    /** Pins [link], or unpins it when it is already pinned. */
+    fun togglePin(link: TreeConnectionTarget) {
+        pin(if (pinned?.pair == link.pair) null else link)
     }
 
-    fun showPinned(from: String, to: String, site: TreeConnectionSite, anchor: Point) {
-        showTimer.stop()
-        hideTimer.stop()
-        pendingHover = null
-        showPreview(from, to, site, anchor, pinned = true)
+    fun pin(link: TreeConnectionTarget?) {
+        pinned = link
+        dismissed = null
+        apply(force = true)
     }
 
+    /** Notes where the pointer moved on [host], to tell whether it is heading for the window. */
+    fun pointerMoved(point: Point) {
+        val previous = lastPointer
+        lastPointer = point
+        val current = placement
+        headingToWindow = previous != null && current != null && activePanel?.isVisible == true &&
+            headingToPreview(previous.x, previous.y, point.x, point.y, current, JBUI.scale(TreeSourcePreviewController.INTENT_SLACK))
+        if (headingToWindow && timer.isRunning) schedule(TreeSourcePreviewController.HOLD_DELAY_MS)
+    }
+
+    /** Applies any pending change now; tests use it in place of waiting. */
+    fun flush() {
+        if (timer.isRunning) apply()
+    }
+
+    /** Hides the window until the reader moves on to another link, and unpins it. */
+    fun dismiss() {
+        val current = activePair ?: return
+        pinned = null
+        dismissed = current
+        apply(force = true)
+    }
+
+    /** Closes the window and forgets the hovered and pinned links, as when the links change. */
     fun hide() {
-        showTimer.stop()
-        hideTimer.stop()
-        pendingHover = null
-        val current = popup
-        clearState()
-        if (current != null && !current.isDisposed) {
-            current.cancel()
-        }
+        timer.stop()
+        hovered = null
+        pinned = null
+        dismissed = null
+        close()
     }
 
-    private fun showPreview(from: String, to: String, site: TreeConnectionSite, anchor: Point, pinned: Boolean) {
-        val current = popup
-        clearState()
-        if (current != null && !current.isDisposed) {
-            current.cancel()
-        }
+    private fun schedule(delay: Int) {
+        timer.stop()
+        timer.initialDelay = delay
+        timer.start()
+    }
 
-        val relativePoint = RelativePoint(
-            owner,
-            Point(anchor.x + JBUI.scale(12), anchor.y + JBUI.scale(8)),
-        )
-        val panel = TreeConnectionPreviewPanel(
+    /** Shows what the window should show now; [force] skips the hold while the pointer is inside the window. */
+    private fun apply(force: Boolean = false) {
+        timer.stop()
+        if (!force && pinned == null && pointerInside()) {
+            schedule(TreeSourcePreviewController.LEAVE_DELAY_MS)
+            return
+        }
+        val next = desired() ?: return close()
+        var panel = activePanel
+        if (panel == null || panel.pair != next.pair) {
+            close(notify = false)
+            panel = build(next)
+            activePanel = panel
+            host.add(panel, 0)
+            lastAnchor = null
+        }
+        target = next
+        panel.isPinned = pinned?.pair == next.pair
+        panel.isVisible = true
+        position()
+        changed()
+    }
+
+    private fun close(notify: Boolean = true) {
+        val panel = activePanel ?: return
+        panel.cancelExplanation()
+        host.remove(panel)
+        activePanel = null
+        target = null
+        placement = null
+        host.repaint()
+        if (notify) changed()
+    }
+
+    private fun build(link: TreeConnectionTarget): TreeConnectionPreviewPanel {
+        val (from, to, site) = link
+        lateinit var panel: TreeConnectionPreviewPanel
+        panel = TreeConnectionPreviewPanel(
             fromPath = from,
             toPath = to,
             site = site,
-            pinned = pinned,
+            pinned = false,
             openAt = openAt,
-            openContext = openContext?.let { callback -> { callback(from, to, site, relativePoint) } },
-            onClose = { hide() },
+            openContext = openContext?.let { callback ->
+                { callback(from, to, site, RelativePoint(host, placement?.let { Point(it.x, it.y) } ?: Point())) }
+            },
+            onClose = { dismiss() },
             project = project,
             explain = explainConnection?.let { callback -> suspend { callback(from, to, site) } },
-        ).apply {
-            onExplanationShown = {
-                val current = popup
-                if (current != null && !current.isDisposed && activePanel === this) {
-                    val size = current.size
-                    val minHeight = JBUI.scale(500)
-                    if (size.height < minHeight) {
-                        current.size = Dimension(maxOf(size.width, JBUI.scale(560)), minHeight)
-                    }
-                }
-            }
-        }
-
-        if (!pinned) {
-            val hoverKeepAlive = object : MouseAdapter() {
-                override fun mouseEntered(e: MouseEvent) = hideTimer.stop()
-                override fun mouseExited(e: MouseEvent) {
-                    if (!isPinned && !isPointerInsidePanel(panel)) hideTimer.restart()
-                }
-            }
-            panel.addMouseListener(hoverKeepAlive)
-        }
-
-        activePanel = panel
-        activePair = from to to
-        isPinned = pinned
-
-        if (owner.isShowing) {
-            val created = JBPopupFactory.getInstance()
-                .createComponentPopupBuilder(panel, if (pinned) panel else null)
-                .setRequestFocus(pinned)
-                .setFocusable(pinned)
-                .setMovable(true)
-                .setResizable(true)
-                .setCancelOnClickOutside(true)
-                .setCancelKeyEnabled(true)
-                .setCancelCallback {
-                    if (activePanel === panel) clearState()
-                    true
-                }
-                .createPopup()
-            popup = created
-            created.show(relativePoint)
-        }
+            onTogglePin = { togglePin(link) },
+            onResize = { dx, _ -> resizeBy(dx) },
+            onEscape = {
+                dismiss()
+                escape()
+            },
+        )
+        panel.onExplanationShown = { if (activePanel === panel) position() }
+        return panel
     }
 
-    private fun isPointerInsidePopup(): Boolean {
-        val panel = activePanel ?: return false
-        return isPointerInsidePanel(panel)
+    private fun resizeBy(dx: Int) {
+        val current = placement ?: return
+        if (dx == 0) return
+        preferredWidth = (current.width + dx).coerceIn(
+            JBUI.scale(TreeSourcePreviewController.MIN_WIDTH),
+            maxOf(JBUI.scale(TreeSourcePreviewController.MIN_WIDTH), host.width - JBUI.scale(TreeSourcePreviewController.MARGIN) * 2),
+        )
+        position()
     }
 
-    private fun isPointerInsidePanel(panel: JComponent): Boolean {
-        if (!panel.isShowing) return false
+    /** Places the window beside its linked row; called when it changes, resizes, or the board does. */
+    fun position() {
+        val panel = activePanel ?: return
+        val link = target ?: return
+        if (host.width <= 0 || host.height <= 0) return
+        val anchor = anchorBounds(link)?.also { lastAnchor = it } ?: lastAnchor ?: Rectangle(0, host.height / 3, 0, 0)
+        val next = treePreviewPlacement(
+            viewWidth = host.width,
+            viewHeight = host.height,
+            anchorTop = anchor.y,
+            anchorBottom = anchor.y + anchor.height,
+            anchorLeft = anchor.x,
+            anchorRight = anchor.x + anchor.width,
+            width = preferredWidth ?: panel.preferredSize.width,
+            naturalHeight = panel.preferredSize.height,
+            margin = JBUI.scale(TreeSourcePreviewController.MARGIN),
+            gap = JBUI.scale(TreeSourcePreviewController.GAP),
+            minWidth = JBUI.scale(TreeSourcePreviewController.MIN_WIDTH),
+            minHeight = JBUI.scale(TreeSourcePreviewController.MIN_HEIGHT),
+            headerOffset = panel.titleCenter() - anchor.height / 2,
+        )
+        placement = next
+        panel.side = next.side
+        val bounds = Rectangle(next.x, next.y, next.width, next.height)
+        if (panel.bounds != bounds) {
+            panel.bounds = bounds
+            panel.revalidate()
+        }
+        host.repaint()
+    }
+
+    /** The linked row's screen bounds, which the window's notch points at. */
+    fun anchor(): Rectangle? = target?.let(anchorBounds) ?: lastAnchor
+
+    /** Whether the pointer is over the window, which keeps what it shows. */
+    fun pointerInside(): Boolean {
+        val panel = activePanel?.takeIf { it.isShowing } ?: return false
         val pointer = runCatching { MouseInfo.getPointerInfo()?.location }.getOrNull() ?: return false
-        val topLeft = runCatching { panel.locationOnScreen }.getOrNull() ?: return false
-        val bounds = Rectangle(topLeft.x, topLeft.y, panel.width, panel.height)
-        return bounds.contains(pointer)
+        val origin = runCatching { panel.locationOnScreen }.getOrNull() ?: return false
+        return Rectangle(origin.x, origin.y, panel.width, panel.height).contains(pointer)
     }
 
-    private fun clearState() {
-        popup = null
-        activePanel?.cancelExplanation()
-        activePanel = null
-        activePair = null
-        isPinned = false
-    }
+    /** Whether keyboard focus is inside the window, such as in its explanation. */
+    fun hasFocus(): Boolean = activePanel?.let {
+        SwingUtilities.isDescendingFrom(java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner ?: return false, it)
+    } == true
 
-    override fun dispose() {
-        hide()
-    }
-
-    private companion object {
-        const val HOVER_SHOW_DELAY_MS = 250
-        const val HOVER_HIDE_DELAY_MS = 280
-    }
+    override fun dispose() = hide()
 }

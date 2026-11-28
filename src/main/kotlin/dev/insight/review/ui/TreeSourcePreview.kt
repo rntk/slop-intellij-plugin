@@ -78,7 +78,7 @@ internal class TreeSourcePreviewPanel(
         name = "charts-tree-source-preview-pin"
         cursor = Cursor.getDefaultCursor()
     }
-    private val grip = ResizeGrip()
+    private val grip = PreviewResizeGrip("charts-tree-source-preview-grip", { isPinned }, resize)
     var isPinned: Boolean = false
         set(value) {
             field = value
@@ -93,6 +93,7 @@ internal class TreeSourcePreviewPanel(
         set(value) {
             if (field == value) return
             field = value
+            grip.side = value
             remove(grip)
             add(grip, if (value == PreviewSide.RIGHT) BorderLayout.WEST else BorderLayout.EAST)
             revalidate()
@@ -305,40 +306,6 @@ internal class TreeSourcePreviewPanel(
         viewers.clear()
     }
 
-    /** Drag the window's inner edge to make it wider or narrower. */
-    private inner class ResizeGrip : JComponent() {
-        private var start: Int? = null
-
-        init {
-            name = "charts-tree-source-preview-grip"
-            preferredSize = Dimension(JBUI.scale(5), 0)
-            cursor = Cursor.getPredefinedCursor(Cursor.W_RESIZE_CURSOR)
-            toolTipText = "Drag to resize"
-            val mouse = object : MouseAdapter() {
-                override fun mousePressed(e: MouseEvent) { start = e.xOnScreen }
-                override fun mouseDragged(e: MouseEvent) {
-                    val from = start ?: return
-                    val dx = e.xOnScreen - from
-                    start = e.xOnScreen
-                    // Dragging the left edge left, or the right edge right, widens the window.
-                    resize(if (side == PreviewSide.RIGHT) -dx else dx, false)
-                }
-                override fun mouseReleased(e: MouseEvent) {
-                    start = null
-                    resize(0, true)
-                }
-            }
-            addMouseListener(mouse)
-            addMouseMotionListener(mouse)
-        }
-
-        override fun paintComponent(g: Graphics) {
-            g.color = if (isPinned) alpha(JBUI.CurrentTheme.Focus.focusColor(), 150) else alpha(JBColor.border(), 120)
-            val x = if (side == PreviewSide.RIGHT) 0 else width - JBUI.scale(2)
-            g.fillRect(x, 0, JBUI.scale(2), height)
-        }
-    }
-
     private class WidthTrackingPanel : JPanel(VerticalLayout(JBUI.scale(FOLDER_GAP))), Scrollable {
         init { isOpaque = false }
         override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
@@ -356,9 +323,48 @@ internal class TreeSourcePreviewPanel(
 
         private fun lineCount(text: String?): Int =
             if (text.isNullOrEmpty()) 0 else text.count { it == '\n' } + if (text.endsWith('\n')) 0 else 1
-
-        private fun alpha(color: Color, alpha: Int) = Color(color.red, color.green, color.blue, alpha)
     }
+}
+
+/** The inner edge of a docked Tree preview window; dragging it makes the window wider or narrower. */
+internal class PreviewResizeGrip(
+    name: String,
+    private val pinned: () -> Boolean,
+    private val resize: (dx: Int, done: Boolean) -> Unit,
+) : JComponent() {
+    var side: PreviewSide = PreviewSide.RIGHT
+    private var start: Int? = null
+
+    init {
+        this.name = name
+        preferredSize = Dimension(JBUI.scale(5), 0)
+        cursor = Cursor.getPredefinedCursor(Cursor.W_RESIZE_CURSOR)
+        toolTipText = "Drag to resize"
+        val mouse = object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) { start = e.xOnScreen }
+            override fun mouseDragged(e: MouseEvent) {
+                val from = start ?: return
+                val dx = e.xOnScreen - from
+                start = e.xOnScreen
+                // Dragging the left edge left, or the right edge right, widens the window.
+                resize(if (side == PreviewSide.RIGHT) -dx else dx, false)
+            }
+            override fun mouseReleased(e: MouseEvent) {
+                start = null
+                resize(0, true)
+            }
+        }
+        addMouseListener(mouse)
+        addMouseMotionListener(mouse)
+    }
+
+    override fun paintComponent(g: Graphics) {
+        g.color = if (pinned()) alpha(JBUI.CurrentTheme.Focus.focusColor(), 150) else alpha(JBColor.border(), 120)
+        val x = if (side == PreviewSide.RIGHT) 0 else width - JBUI.scale(2)
+        g.fillRect(x, 0, JBUI.scale(2), height)
+    }
+
+    private fun alpha(color: Color, alpha: Int) = Color(color.red, color.green, color.blue, alpha)
 }
 
 /**
@@ -414,9 +420,20 @@ internal class TreeSourcePreviewController(
 
     val shownTarget: TreeSourcePreviewTarget? get() = shown?.target
 
+    /** Whether another Tree preview, such as a link window, holds the dock; this window waits hidden meanwhile. */
+    var yielding: Boolean = false
+        private set
+
     /** What the window should show now, ignoring delays. */
-    private fun desired(): TreeSourcePreviewTarget? =
+    private fun desired(): TreeSourcePreviewTarget? = if (yielding) null else
         (pinned ?: if (following) hovered ?: cursor else null)?.takeUnless { it.path == dismissed && it != pinned }
+
+    /** Hides the window while [other] holds the dock, and shows it again once it leaves. */
+    fun yieldTo(other: Boolean) {
+        if (yielding == other) return
+        yielding = other
+        apply(force = true)
+    }
 
     fun setFollowing(on: Boolean) {
         if (following == on) return

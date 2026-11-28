@@ -15,6 +15,7 @@ import com.intellij.util.ui.UIUtil
 import dev.insight.review.LineChartMetric
 import dev.insight.review.LineLinkMatch
 import dev.insight.review.PreviewSide
+import dev.insight.review.PreviewPlacement
 import dev.insight.review.ReviewSource
 import dev.insight.review.RadarSeries
 import dev.insight.review.ReportTargetKind
@@ -496,10 +497,25 @@ internal class TreeBoardPanel(
     }
 
     internal val canvas = TreeBoardCanvas()
-    internal val connectionPreview = TreeConnectionPreviewController(canvas, openAt, openConnection, project, explainConnection)
+
+    /** The floating link window on the canvas; while it shows, it holds the dock and the source preview waits. */
+    internal val connectionPreview: TreeConnectionPreviewController = TreeConnectionPreviewController(
+        host = canvas,
+        openAt = openAt,
+        openContext = openConnection,
+        project = project,
+        explainConnection = explainConnection,
+        anchorBounds = { link -> canvas.connectionAnchorBounds(link) },
+        escape = { requestFocusInWindow() },
+        changed = {
+            this.sourcePreview.yieldTo(connectionPreview.activePanel != null)
+            positionHuds()
+            canvas.repaint()
+        },
+    )
 
     /** The floating source or diff window on the canvas, docked to its right edge. */
-    internal val sourcePreview = TreeSourcePreviewController(
+    internal val sourcePreview: TreeSourcePreviewController = TreeSourcePreviewController(
         host = canvas,
         sources = { target ->
             if (target.directory) {
@@ -1336,7 +1352,7 @@ internal class TreeBoardPanel(
         var zx = defaultZx
         var zy = bottomZy
         var zoomOnTop = false
-        val preview = sourcePreview.shown?.takeIf { it.isVisible }
+        val preview = dockedPreview()
         if (preview != null) {
             val previewRect = preview.bounds
             fun overlapsZoom(x: Int, y: Int): Boolean =
@@ -1404,7 +1420,7 @@ internal class TreeBoardPanel(
         }
         statusHud.setBounds(margin, statusY, statusW, statusPref.height)
         statusHud.revalidate()
-        val preview = sourcePreview.shown?.takeIf { it.isVisible }
+        val preview = dockedPreview()
         if (preview != null && preview.bounds.intersects(statusHud.bounds) &&
             statusHud.parent === canvas && canvas.getComponentZOrder(statusHud) != 0
         ) {
@@ -1412,8 +1428,12 @@ internal class TreeBoardPanel(
         }
     }
 
+    /** The docked preview window on the canvas, if one shows: the link window, or else the source preview. */
+    private fun dockedPreview(): JComponent? =
+        connectionPreview.activePanel?.takeIf { it.isVisible } ?: sourcePreview.shown?.takeIf { it.isVisible }
+
     private fun notifyViewportChanged() {
-        connectionPreview.hide()
+        // Like the source preview, the link window stays docked and steady while the board pans and zooms.
         canvas.invalidateRoutes()
         viewportChanged(viewport.zoom, viewport.panX, viewport.panY)
         positionSummary()
@@ -1427,7 +1447,7 @@ internal class TreeBoardPanel(
             getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(stroke, id)
             actionMap.put(id, object : AbstractAction() {
                 // Keys typed in the preview's editor belong to it, not to the tree.
-                override fun isEnabled() = !sourcePreview.hasFocus()
+                override fun isEnabled() = !sourcePreview.hasFocus() && !connectionPreview.hasFocus()
                 override fun actionPerformed(e: ActionEvent) = action()
             })
         }
@@ -1485,9 +1505,12 @@ internal class TreeBoardPanel(
             board.nodes.getOrNull(cursorIndex)?.let { togglePreview(it.entry.path) }
         }
         bind(KeyEvent.VK_ESCAPE, "charts-tree-clear-selection") {
-            connectionPreview.hide()
-            // A pinned preview closes first; the next Escape clears the selection.
-            if (sourcePreview.pinned != null) sourcePreview.dismiss() else clearSelection()
+            // An open link window or a pinned preview closes first; the next Escape clears the selection.
+            when {
+                connectionPreview.activePanel != null -> connectionPreview.dismiss()
+                sourcePreview.pinned != null -> sourcePreview.dismiss()
+                else -> clearSelection()
+            }
         }
     }
 
@@ -1652,6 +1675,7 @@ internal class TreeBoardPanel(
         override fun doLayout() {
             positionSummary()
             sourcePreview.position()
+            connectionPreview.position()
             positionHuds()
         }
 
@@ -1670,6 +1694,7 @@ internal class TreeBoardPanel(
 
                 override fun mouseMoved(e: MouseEvent) {
                     sourcePreview.pointerMoved(e.point)
+                    connectionPreview.pointerMoved(e.point)
                     val cardHit = railCardAt(e.point)
                     val linkHit = if (cardHit == null) textLinkAt(e.point) else null
                     val hit = if (linkHit == null && cardHit == null) nodeAt(e.x, e.y) else null
@@ -1686,23 +1711,18 @@ internal class TreeBoardPanel(
                         repaint()
                     }
                     hoverRailCard(cardHit?.card)
-                    if (route != null) {
-                        connectionSiteFor(route)?.let { site ->
-                            connectionPreview.scheduleHover(route.from, route.to, site, e.point)
-                        }
-                    } else {
-                        connectionPreview.onHoverCleared()
-                    }
+                    connectionPreview.track(route?.let(::connectionTarget))
                     cursor = if (hit != null || cardHit != null || linkHit != null || route != null) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                     else Cursor.getDefaultCursor()
                 }
 
                 override fun mouseExited(e: MouseEvent) {
-                    connectionPreview.onHoverCleared()
+                    connectionPreview.track(null)
                     // Moving onto the floating summary keeps what it shows, so its links stay reachable.
                     if (summaryPanel?.let { it.isVisible && it.bounds.contains(e.point) } == true) return
                     // The same holds for the source preview, so the reader can scroll it.
                     if (sourcePreview.shown?.let { it.isVisible && it.bounds.contains(e.point) } == true) return
+                    if (connectionPreview.activePanel?.let { it.isVisible && it.bounds.contains(e.point) } == true) return
                     if (listOf(zoomHud, statusHud, focusChip).any { it.isVisible && it.bounds.contains(e.point) }) return
                     hoverRailCard(null)
                     if (hoveredIndex != -1 || hoveredRoute != null || hoveredSummaryLink != null) {
@@ -1860,10 +1880,7 @@ internal class TreeBoardPanel(
                         connectionPreview.hide()
                         return showSummaryLinkPopup(hit, e)
                     }
-                    val node = nodeAt(e.x, e.y) ?: run {
-                        connectionPreview.hide()
-                        return activateConnection(e)
-                    }
+                    val node = nodeAt(e.x, e.y) ?: return activateConnection(e)
                     moveCursor(node.index, reveal = false)
                     val menu = contextMenu?.invoke(node.entry) ?: JPopupMenu()
                     if (canMarkViewed(node)) {
@@ -2533,18 +2550,26 @@ internal class TreeBoardPanel(
             if (isRailVisible) rail?.paint(g, width, height)
         }
 
-        /** A small notch on the preview's edge, pointing at the row it shows. */
+        /** A small notch on the docked window's edge, pointing at the row it shows: the link window's, or the source preview's. */
         private fun paintPreviewPointer(g: Graphics2D) {
+            connectionPreview.activePanel?.takeIf { it.isVisible }?.let {
+                val placement = connectionPreview.placement ?: return
+                val anchor = connectionPreview.anchor() ?: return
+                return paintPreviewPointer(g, placement, anchor.centerY, connectionPreview.isPinned)
+            }
             val panel = sourcePreview.shown?.takeIf { it.isVisible } ?: return
             val placement = sourcePreview.placement ?: return
             val index = board.indexOf(panel.target.path).takeIf { it >= 0 } ?: return
-            val centerY = viewport.worldToScreenY(rowCenterWorld(index))
+            paintPreviewPointer(g, placement, viewport.worldToScreenY(rowCenterWorld(index)), sourcePreview.pinned != null)
+        }
+
+        private fun paintPreviewPointer(g: Graphics2D, placement: PreviewPlacement, centerY: Double, pinned: Boolean) {
             val size = JBUI.scale(7).toDouble()
             if (centerY - size < placement.y + JBUI.scale(4) || centerY + size > placement.bottom - JBUI.scale(4)) return
             val right = placement.side == PreviewSide.RIGHT
             val edge = (if (right) placement.x else placement.right).toDouble()
             val tip = if (right) edge - size else edge + size
-            g.color = if (sourcePreview.pinned != null) accentColor else JBColor.border()
+            g.color = if (pinned) accentColor else JBColor.border()
             g.fill(Path2D.Double().apply {
                 moveTo(edge, centerY - size)
                 lineTo(tip, centerY)
@@ -2977,10 +3002,26 @@ internal class TreeBoardPanel(
             return if (route.outgoing) links.outgoing[route.to] else links.incoming[route.from]
         }
 
+        private fun connectionTarget(route: ConnectionRoute): TreeConnectionTarget? =
+            connectionSiteFor(route)?.let { connectionTarget(route, it) }
+
+        /** The link window anchors on the row at the link's far end, the file other than the selected one. */
+        private fun connectionTarget(route: ConnectionRoute, site: TreeConnectionSite) =
+            TreeConnectionTarget(route.from, route.to, site, if (route.outgoing) route.to else route.from)
+
+        /** The linked row's screen bounds, stretched right to its link lane so the window never covers the link. */
+        fun connectionAnchorBounds(link: TreeConnectionTarget): Rectangle? {
+            val node = board.nodes.getOrNull(board.indexOf(link.linkedPath)) ?: return null
+            val row = rowScreenBounds(node)
+            val route = connectionRoutes().firstOrNull { it.from == link.from && it.to == link.to } ?: return row
+            val right = maxOf(row.x + row.width, ceil(route.bend).toInt() + JBUI.scale(4))
+            return Rectangle(row.x, row.y, right - row.x, row.height)
+        }
+
         private fun previewConnection(event: MouseEvent): Boolean {
             val route = connectionAt(event.point) ?: return false
             val site = connectionSiteFor(route) ?: return false
-            connectionPreview.showPinned(route.from, route.to, site, event.point)
+            connectionPreview.togglePin(connectionTarget(route, site))
             return true
         }
 
@@ -3014,8 +3055,11 @@ internal class TreeBoardPanel(
                 g.drawLine(x2.roundToInt(), y2.roundToInt(), (x2 + arrow).roundToInt(), (y2 - arrow / 2).roundToInt())
                 g.drawLine(x2.roundToInt(), y2.roundToInt(), (x2 + arrow).roundToInt(), (y2 + arrow / 2).roundToInt())
             }
-            for (route in links) if (route != hoveredRoute) draw(route, false)
-            hoveredRoute?.let { draw(it, true) }
+            // The hovered link, and the one the link window shows, draw on top and bolder.
+            val shown = connectionPreview.activePair
+            fun highlighted(route: ConnectionRoute) = route == hoveredRoute || (route.from to route.to) == shown
+            for (route in links) if (!highlighted(route)) draw(route, false)
+            for (route in links) if (highlighted(route)) draw(route, true)
         }
 
         private fun paintGrid(g: Graphics2D) {

@@ -20,6 +20,8 @@ Row checkboxes mark files **Viewed** or **Unviewed**. A folder checkbox marks it
 
 A control panel toggle lets the source or diff of the hovered or active file or folder follow the reader in a floating window. Unlike the summary and cards, the window is docked to the board's edge rather than placed on the canvas, so it stays readable and steady while the tree pans and zooms. Short content opens beside its row; taller content moves toward the top of the board to use its full height, and a folder stacks the first few of its files. Changes wait briefly, and longer while the pointer heads for the window, so readers can reach it across other rows. Each file and folder row also has a preview icon that pins its window, even while the toggle is off.
 
+Links between files open a window the same way: it docks beside the linked row, follows the hovered link with the same waits, stays while the pointer is inside, and a click on the link pins it. While a link window is open, the source preview steps aside, so only one window holds the dock.
+
 The [example canvas](../example/canvas/) shows the intended interaction model: one transformed viewport holding the content, the hierarchy rail, and the floating summary.
 
 Entry points for further exploration:
@@ -29,3 +31,4 @@ Entry points for further exploration:
 - [TreeBoardView.kt](../src/main/kotlin/dev/insight/review/ui/TreeBoardView.kt) — tree board view
 - [TreeBoardSidePanels.kt](../src/main/kotlin/dev/insight/review/ui/TreeBoardSidePanels.kt) — summary and cards on the canvas
 - [TreeSourcePreview.kt](../src/main/kotlin/dev/insight/review/ui/TreeSourcePreview.kt) — the floating source or diff preview
+- [TreeConnectionPreview.kt](../src/main/kotlin/dev/insight/review/ui/TreeConnectionPreview.kt) — the floating link preview

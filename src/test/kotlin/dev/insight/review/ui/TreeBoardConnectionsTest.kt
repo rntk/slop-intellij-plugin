@@ -290,6 +290,66 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         }
     }
 
+    fun testLinkWindowDocksBesideLinkedRowLikeSourcePreview() {
+        val a = CodeFile("a.kt", "/src/a.kt", "val a = 1")
+        val b = CodeFile("b.kt", "/src/b.kt", "val b = a")
+        val chart = ReviewLineChart(buildSummaryTree(listOf(a, b)))
+        val board = TreeBoardPanel(chart, "Project", {}, sourcePreview = true)
+        val canvas = board.canvas
+        canvas.setSize(1000, 500)
+        board.connectionSelection = TreeConnectionSelection(a.path,
+            TreeFileConnections(mapOf(b.path to TreeConnectionSite(3, 7)), mapOf(b.path to TreeConnectionSite(4, 9))))
+        val row = checkNotNull(board.rowScreenBounds(b.path))
+        val x = board.board.nodes.maxOf {
+            checkNotNull(board.rowScreenBounds(it.entry.path)).let { r -> r.x + r.width }
+        } + JBUI.scale(12)
+        fun event(id: Int, y: Int, button: Int = MouseEvent.NOBUTTON) =
+            MouseEvent(canvas, id, 0, 0, x, y, 1, false, button)
+        val onLink = row.centerY.toInt() - JBUI.scale(8)
+        try {
+            // Hovering a link waits, then docks its window to the board's right edge, inside the canvas.
+            canvas.dispatchEvent(event(MouseEvent.MOUSE_MOVED, onLink))
+            assertNull(board.connectionPreview.activePanel)
+            board.connectionPreview.flush()
+            val window = checkNotNull(board.connectionPreview.activePanel)
+            assertSame(canvas, window.parent)
+            assertEquals(b.path to a.path, board.connectionPreview.activePair)
+            assertFalse(board.connectionPreview.isPinned)
+            assertEquals(canvas.width - JBUI.scale(TreeSourcePreviewController.MARGIN), window.bounds.x + window.bounds.width)
+            assertTrue("The window overlaps the linked row's height",
+                window.y <= row.y + row.height && window.y + window.height >= row.y)
+            // The source preview steps aside while the link window holds the dock.
+            assertTrue(board.sourcePreview.yielding)
+
+            // Panning keeps the window steady rather than closing it.
+            fun pan(rotation: Int) = canvas.dispatchEvent(java.awt.event.MouseWheelEvent(canvas, MouseEvent.MOUSE_WHEEL, 0,
+                java.awt.event.InputEvent.SHIFT_DOWN_MASK, x, onLink, 0, false, java.awt.event.MouseWheelEvent.WHEEL_UNIT_SCROLL, 1, rotation))
+            pan(1)
+            assertSame(window, board.connectionPreview.activePanel)
+            pan(-1)
+
+            // Clicking the link pins the same window; clicking it again unpins it.
+            canvas.dispatchEvent(event(MouseEvent.MOUSE_MOVED, onLink))
+            canvas.dispatchEvent(event(MouseEvent.MOUSE_CLICKED, onLink, MouseEvent.BUTTON1))
+            assertSame(window, board.connectionPreview.activePanel)
+            assertTrue(board.connectionPreview.isPinned)
+            assertTrue(window.isPinned)
+            canvas.dispatchEvent(event(MouseEvent.MOUSE_CLICKED, onLink, MouseEvent.BUTTON1))
+            assertFalse(board.connectionPreview.isPinned)
+
+            // Escape closes the link window first, and the source preview may return.
+            canvas.dispatchEvent(event(MouseEvent.MOUSE_CLICKED, onLink, MouseEvent.BUTTON1))
+            val binding = board.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0))
+            board.actionMap.get(binding).actionPerformed(ActionEvent(board, 0, binding.toString()))
+            assertNull(board.connectionPreview.activePanel)
+            assertNull(window.parent)
+            assertFalse(board.sourcePreview.yielding)
+            assertNotNull(board.connectionSelection)
+        } finally {
+            board.releasePreviews()
+        }
+    }
+
     fun testLinkHitAreaAndPickerPreserveDirection() {
         val a = CodeFile("a.kt", "/src/a.kt", "val a = 1")
         val b = CodeFile("b.kt", "/src/b.kt", "val b = a")
