@@ -607,6 +607,100 @@ class TreeBoardSidePanelsTest : BasePlatformTestCase() {
         assertEquals("Context…", item.text)
     }
 
+    fun testSummaryCardCanBeDraggedToCustomPositionAndReset() {
+        val files = listOf(
+            CodeFile("src/a.kt", "/repo/src/a.kt", "fun a() = 1\n"),
+            CodeFile("src/b.kt", "/repo/src/b.kt", "fun b() = 2\n"),
+        )
+        val tree = buildSummaryTree(files)
+        val aNode = tree.scopeNode("src/a.kt", SummaryKind.FILE)!!
+        val summaries = ReviewSummaries(
+            tree,
+            mapOf(
+                tree.root.id to Summary.plain("Root overview."),
+                aNode.id to Summary.plain("File A overview."),
+            ),
+        )
+        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE).apply { setSize(1400, 800) }
+        fun components() = descendants(canvas)
+        fun selector() = components().filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }
+        fun tabs() = components().filterIsInstance<JBTabbedPane>().single { it.name == "charts-lines-metric-tabs" }
+        fun boardPanel() = components().filterIsInstance<TreeBoardPanel>().single()
+        fun summaryText() = components().filterIsInstance<JTextArea>().single { it.name == "charts-tree-summary-text" }.text
+        fun resetButton(panel: Container) =
+            descendants(panel).filterIsInstance<JButton>().single { it.name == "charts-tree-summary-reset-position" }
+
+        try {
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(summaries)))
+            selector().selectedItem = "Tree"
+            val board = boardPanel().apply {
+                setSize(1200, 680)
+                layoutTree(this)
+            }
+            val summaryPanel = checkNotNull(board.summaryPanel)
+            val resetBtn = resetButton(summaryPanel)
+            val header = descendants(summaryPanel).single { it.name == "charts-tree-summary-header" }
+
+            assertFalse(board.isSummaryCustomPositioned)
+            assertFalse(resetBtn.isVisible)
+            val rootPath = board.board.nodes.first().entry.path
+            val rootRow = checkNotNull(board.rowScreenBounds(rootPath))
+            val rootRight = rootRow.x + rootRow.width
+            assertTrue(summaryPanel.x + summaryPanel.width <= rootRow.x)
+
+            // Drag the summary card by its header to the right side of the canvas.
+            val startX = summaryPanel.x
+            val startY = summaryPanel.y
+            header.dispatchEvent(MouseEvent(header, MouseEvent.MOUSE_PRESSED, 0, MouseEvent.BUTTON1_DOWN_MASK, 20, 10, 1, false, MouseEvent.BUTTON1))
+            header.dispatchEvent(MouseEvent(header, MouseEvent.MOUSE_DRAGGED, 0, MouseEvent.BUTTON1_DOWN_MASK, 20 + 700, 10 + 120, 1, false, MouseEvent.BUTTON1))
+            header.dispatchEvent(MouseEvent(header, MouseEvent.MOUSE_RELEASED, 0, 0, 20 + 700, 10 + 120, 1, false, MouseEvent.BUTTON1))
+
+            assertTrue(board.isSummaryCustomPositioned)
+            assertTrue(resetBtn.isVisible)
+            assertTrue(summaryPanel.x > rootRight)
+            assertEquals(startX + 700, summaryPanel.x)
+            assertEquals(startY + 120, summaryPanel.y)
+            val customLocation = summaryPanel.location
+
+            // Hovering another row updates the summary text without moving the custom-placed card.
+            val rowA = checkNotNull(board.rowScreenBounds("src/a.kt"))
+            board.canvas.dispatchEvent(
+                MouseEvent(board.canvas, MouseEvent.MOUSE_MOVED, 0, 0, rowA.centerX.toInt(), rowA.centerY.toInt(), 0, false),
+            )
+            assertEquals("File A overview.", summaryText())
+            assertEquals(customLocation, summaryPanel.location)
+
+            // Panning the tree left keeps the custom-placed summary card in place.
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_PRESSED, 0, MouseEvent.BUTTON1_DOWN_MASK, 500, 400, 1, false, MouseEvent.BUTTON1))
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_DRAGGED, 0, MouseEvent.BUTTON1_DOWN_MASK, 350, 430, 1, false, MouseEvent.BUTTON1))
+            board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_RELEASED, 0, 0, 350, 430, 1, false, MouseEvent.BUTTON1))
+            assertEquals(rowA.x - 150, checkNotNull(board.rowScreenBounds("src/a.kt")).x)
+            assertEquals(customLocation, summaryPanel.location)
+
+            // Switching metric tabs preserves the custom summary position and reset button visibility.
+            tabs().selectedIndex = 1
+            val rebuilt = boardPanel().apply {
+                setSize(1200, 680)
+                layoutTree(this)
+            }
+            val rebuiltSummary = checkNotNull(rebuilt.summaryPanel)
+            val rebuiltReset = resetButton(rebuiltSummary)
+            assertTrue(rebuilt.isSummaryCustomPositioned)
+            assertTrue(rebuiltReset.isVisible)
+            assertEquals(customLocation, rebuiltSummary.location)
+
+            // Clicking Reset position returns the card to the left of the tree and brings the tree back into view if needed.
+            rebuiltReset.doClick()
+            assertFalse(rebuilt.isSummaryCustomPositioned)
+            assertFalse(rebuiltReset.isVisible)
+            assertTrue(rebuiltSummary.x >= 0)
+            val rebuiltRootPath = rebuilt.board.nodes.first().entry.path
+            assertTrue(rebuiltSummary.x + rebuiltSummary.width <= checkNotNull(rebuilt.rowScreenBounds(rebuiltRootPath)).x)
+        } finally {
+            canvas.dispose()
+        }
+    }
+
     private fun triggerKey(panel: TreeBoardPanel, keyCode: Int) {
         val stroke = KeyStroke.getKeyStroke(keyCode, 0)
         val actionId = panel.getInputMap(javax.swing.JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).get(stroke)

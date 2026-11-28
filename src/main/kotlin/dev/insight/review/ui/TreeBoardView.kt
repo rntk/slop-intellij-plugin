@@ -37,6 +37,7 @@ import dev.insight.review.TreeRailMode
 import dev.insight.review.TreeRailModel
 import dev.insight.review.TreeRailPlacement
 import dev.insight.review.computeTreeRailPlacements
+import dev.insight.review.clampedFloatingCardOrigin
 import dev.insight.review.floatingCardTop
 import dev.insight.review.treeCanvasCardScale
 import dev.insight.review.WrappedSummaryLine
@@ -190,6 +191,8 @@ internal class TreeBoardPanel(
     private val markViewed: ((List<String>, Boolean) -> Unit)? = null,
     initialShowOnlyUnviewed: Boolean = false,
     private val showOnlyUnviewedChanged: (Boolean) -> Unit = {},
+    initialSummaryPosition: Point? = null,
+    private val summaryPositionChanged: (Point?) -> Unit = {},
 ) : JPanel(BorderLayout()) {
     private val metric = chart.metric
     private val numberColor: Color get() = metric.diffSeries?.let(RadarChartPanel::color) ?: UIUtil.getLabelForeground()
@@ -228,8 +231,10 @@ internal class TreeBoardPanel(
     private var selectedRailKey: String? = initialSelectedRailKey?.takeIf { railModel?.cardByKey(it) != null }
     private var railVisible: Boolean = initialRailVisible
     private var summaryDismissed: Boolean = false
+    private var summaryCustomPosition: Point? = initialSummaryPosition?.let { Point(it) }
     private var groupHighlight: TreeBoardGroupHighlight? = null
 
+    val isSummaryCustomPositioned: Boolean get() = summaryCustomPosition != null
     val isRailVisible: Boolean get() = railVisible && rail != null
     private val railFileOrder: Map<String, Int>
         get() = if (isRailVisible) railModel?.fileOrder.orEmpty() else emptyMap()
@@ -254,6 +259,8 @@ internal class TreeBoardPanel(
                     canvas.dispatchEvent(SwingUtilities.convertMouseEvent(e.component, e, canvas))
                 },
                 onClose = { dismissSummary() },
+                onMove = { x, y -> moveSummaryTo(x, y) },
+                onResetPosition = { resetSummaryPosition() },
             )
         } else null
 
@@ -773,7 +780,10 @@ internal class TreeBoardPanel(
         getAccessibleContext().accessibleName = "${metric.label} tree board"
 
         add(canvas, BorderLayout.CENTER)
-        summaryPanel?.let(canvas::add)
+        summaryPanel?.let { panel ->
+            panel.isCustomPositioned = summaryCustomPosition != null
+            canvas.add(panel)
+        }
         canvas.add(focusChip, 0)
         canvas.add(statusHud, 0)
         canvas.add(zoomHud, 0)
@@ -1061,7 +1071,9 @@ internal class TreeBoardPanel(
 
     /** Screen width the floating summary and its gap take to the left of the tree at card [scale]. */
     private fun summaryLaneScreenWidth(scale: Double): Double =
-        if (summaryEnabled) (JBUI.scale(TreeBoardSummaryPanel.DEFAULT_WIDTH) + 2 * JBUI.scale(TreeBoardSummaryPanel.GAP)) * scale else 0.0
+        if (summaryEnabled && summaryCustomPosition == null) {
+            (JBUI.scale(TreeBoardSummaryPanel.DEFAULT_WIDTH) + 2 * JBUI.scale(TreeBoardSummaryPanel.GAP)) * scale
+        } else 0.0
 
     /** Horizontal pan of a reset board: leaves room for whichever left lane is wider (metric column or summary). */
     private fun homePanX(): Double = maxOf(summaryLaneScreenWidth(1.0), canvas.metricLaneWorldWidth())
@@ -1082,6 +1094,37 @@ internal class TreeBoardPanel(
         canvas.repaint()
     }
 
+    private fun moveSummaryTo(x: Int, y: Int) {
+        val panel = summaryPanel ?: return
+        if (canvas.width <= 0 || canvas.height <= 0) return
+        val margin = JBUI.scale(TreeBoardSummaryPanel.MARGIN)
+        val width = panel.width.coerceAtLeast(JBUI.scale(TreeBoardSummaryPanel.DEFAULT_WIDTH))
+        val height = panel.height.coerceAtLeast(JBUI.scale(60))
+        val (cx, cy) = clampedFloatingCardOrigin(x, y, width, height, canvas.width, canvas.height, margin)
+        val next = Point(cx, cy)
+        if (summaryCustomPosition == next) return
+        summaryCustomPosition = next
+        panel.isCustomPositioned = true
+        summaryPositionChanged(Point(next))
+        positionSummary()
+    }
+
+    fun resetSummaryPosition() {
+        val panel = summaryPanel ?: return
+        if (summaryCustomPosition == null) return
+        summaryCustomPosition = null
+        panel.isCustomPositioned = false
+        summaryPositionChanged(null)
+        val minPanX = summaryLaneScreenWidth(treeCanvasCardScale(viewport.zoom))
+        if (viewport.panX < minPanX) {
+            viewport.panX = minPanX
+            notifyViewportChanged()
+            canvas.repaint()
+        } else {
+            positionSummary()
+        }
+    }
+
     private fun updateShowSummaryButton() {
         val available = summaryPanel != null &&
             (nodeSummaries.isNotEmpty() || (isRailVisible && railModel?.cards?.isNotEmpty() == true))
@@ -1098,26 +1141,38 @@ internal class TreeBoardPanel(
     private fun railStartWorldX(): Double =
         canvas.treeRightWorldX() + JBUI.scale(TreeBoardRail.TREE_GAP) * treeCanvasCardScale(viewport.zoom) / viewport.zoom
 
-    /** Places the floating summary beside the tree, next to what it describes, or hides it. */
+    /** Places the floating summary at its custom canvas location or beside the tree, or hides it. */
     internal fun positionSummary() {
         val panel = summaryPanel ?: return
-        val anchor = summaryAnchorScreenY()
-        if (!summaryEnabled || panel.display == null || anchor == null || canvas.width <= 0 || canvas.height <= 0) {
+        if (!summaryEnabled || panel.display == null || canvas.width <= 0 || canvas.height <= 0) {
             panel.isVisible = false
             return
         }
-        val scale = treeCanvasCardScale(viewport.zoom)
-        panel.show(panel.display, scale)
-        val width = (JBUI.scale(TreeBoardSummaryPanel.DEFAULT_WIDTH) * scale).roundToInt()
-        val margin = JBUI.scale(TreeBoardSummaryPanel.MARGIN).toDouble()
-        val height = panel.preferredHeightFor(width).coerceAtMost((canvas.height - 2 * margin).roundToInt().coerceAtLeast(JBUI.scale(60)))
-        val top = floatingCardTop(anchor.first, anchor.second, height.toDouble(), canvas.height.toDouble(), margin)
-        if (top == null) {
-            panel.isVisible = false
-            return
+        val customPos = summaryCustomPosition
+        val bounds = if (customPos != null) {
+            panel.show(panel.display, 1.0)
+            val width = JBUI.scale(TreeBoardSummaryPanel.DEFAULT_WIDTH)
+            val margin = JBUI.scale(TreeBoardSummaryPanel.MARGIN)
+            val height = panel.preferredHeightFor(width).coerceAtMost((canvas.height - 2 * margin).coerceAtLeast(JBUI.scale(60)))
+            val (x, y) = clampedFloatingCardOrigin(customPos.x, customPos.y, width, height, canvas.width, canvas.height, margin)
+            Rectangle(x, y, width, height)
+        } else {
+            val anchor = summaryAnchorScreenY() ?: run {
+                panel.isVisible = false
+                return
+            }
+            val scale = treeCanvasCardScale(viewport.zoom)
+            panel.show(panel.display, scale)
+            val width = (JBUI.scale(TreeBoardSummaryPanel.DEFAULT_WIDTH) * scale).roundToInt()
+            val margin = JBUI.scale(TreeBoardSummaryPanel.MARGIN).toDouble()
+            val height = panel.preferredHeightFor(width).coerceAtMost((canvas.height - 2 * margin).roundToInt().coerceAtLeast(JBUI.scale(60)))
+            val top = floatingCardTop(anchor.first, anchor.second, height.toDouble(), canvas.height.toDouble(), margin) ?: run {
+                panel.isVisible = false
+                return
+            }
+            val right = viewport.worldToScreenX(0.0) - JBUI.scale(TreeBoardSummaryPanel.GAP) * scale
+            Rectangle((right - width).roundToInt(), top.roundToInt(), width, height)
         }
-        val right = viewport.worldToScreenX(0.0) - JBUI.scale(TreeBoardSummaryPanel.GAP) * scale
-        val bounds = Rectangle((right - width).roundToInt(), top.roundToInt(), width, height)
         if (panel.bounds != bounds) {
             panel.bounds = bounds
             panel.revalidate()

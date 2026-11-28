@@ -18,12 +18,15 @@ import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
+import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.FontMetrics
 import java.awt.Graphics2D
 import java.awt.LayoutManager
 import java.awt.Point
 import java.awt.Rectangle
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.geom.RoundRectangle2D
 import javax.swing.JButton
@@ -32,6 +35,7 @@ import javax.swing.JPanel
 import javax.swing.JTextArea
 import javax.swing.ScrollPaneConstants
 import javax.swing.Scrollable
+import javax.swing.SwingUtilities
 import javax.swing.border.MatteBorder
 import kotlin.math.roundToInt
 
@@ -50,8 +54,8 @@ internal data class TreeSummaryDisplay(
 
 /**
  * The floating summary card on the Tree canvas: shows the summary of the hovered or selected Topic/Group card,
- * file, or folder, with clickable file/symbol links when available. The board places it beside the tree in canvas
- * coordinates, so it moves with the canvas, and [show] scales its text with the canvas zoom.
+ * file, or folder, with clickable file/symbol links when available. By default the board places it beside the tree
+ * in canvas coordinates, and readers can also drag its header to place it anywhere on the canvas or reset it.
  */
 internal class TreeBoardSummaryPanel(
     private val project: Project?,
@@ -59,6 +63,8 @@ internal class TreeBoardSummaryPanel(
     /** Receives wheel events the card doesn't use to scroll its own text. */
     private val onWheel: (MouseWheelEvent) -> Unit = {},
     private val onClose: () -> Unit = {},
+    private val onMove: (Int, Int) -> Unit = { _, _ -> },
+    private val onResetPosition: () -> Unit = {},
 ) : JPanel(BorderLayout()) {
     private var currentDisplay: TreeSummaryDisplay? = null
     private var currentScale = 1.0
@@ -66,9 +72,34 @@ internal class TreeBoardSummaryPanel(
     /** The content shown now, or null when there is nothing to show. */
     val display: TreeSummaryDisplay? get() = currentDisplay
 
+    /** Whether the card is currently placed at a custom position rather than beside the tree. */
+    var isCustomPositioned: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            resetPositionButton.isVisible = value
+            header.revalidate()
+            header.repaint()
+        }
+
     private val kindLabel = JLabel("Summary").apply {
         name = "charts-tree-summary-kind"
         foreground = UIUtil.getContextHelpForeground()
+        toolTipText = "Drag to move summary card"
+        cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+    }
+
+    private val resetPositionButton = JButton(AllIcons.General.Reset).apply {
+        name = "charts-tree-summary-reset-position"
+        toolTipText = "Reset summary card to default position"
+        isFocusable = false
+        isBorderPainted = false
+        isContentAreaFilled = false
+        isOpaque = false
+        isVisible = false
+        margin = JBUI.emptyInsets()
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        addActionListener { onResetPosition() }
     }
 
     private val closeButton = JButton(AllIcons.Actions.Close).apply {
@@ -83,10 +114,19 @@ internal class TreeBoardSummaryPanel(
         addActionListener { onClose() }
     }
 
-    private val header = JPanel(BorderLayout()).apply {
+    private val actions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(2), 0)).apply {
         isOpaque = false
+        add(resetPositionButton)
+        add(closeButton)
+    }
+
+    private val header = JPanel(BorderLayout()).apply {
+        name = "charts-tree-summary-header"
+        isOpaque = false
+        toolTipText = "Drag to move summary card"
+        cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
         add(kindLabel, BorderLayout.CENTER)
-        add(closeButton, BorderLayout.EAST)
+        add(actions, BorderLayout.EAST)
     }
 
     private val contentHost = ScrollableWidthPanel(VerticalLayout(JBUI.scale(6))).apply {
@@ -112,7 +152,45 @@ internal class TreeBoardSummaryPanel(
         isVisible = false
         add(header, BorderLayout.NORTH)
         add(scrollPane, BorderLayout.CENTER)
+        installHeaderDrag()
         applyScale(1.0)
+    }
+
+    private fun installHeaderDrag() {
+        var dragStartInParent: Point? = null
+        var panelStart: Point? = null
+        val drag = object : MouseAdapter() {
+            override fun mousePressed(e: MouseEvent) {
+                if (!SwingUtilities.isLeftMouseButton(e) || e.isPopupTrigger) return
+                val host = this@TreeBoardSummaryPanel.parent ?: return
+                dragStartInParent = SwingUtilities.convertPoint(e.component, e.point, host)
+                panelStart = Point(x, y)
+                e.consume()
+            }
+
+            override fun mouseDragged(e: MouseEvent) {
+                val start = dragStartInParent ?: return
+                val origin = panelStart ?: return
+                val host = this@TreeBoardSummaryPanel.parent ?: return
+                val current = SwingUtilities.convertPoint(e.component, e.point, host)
+                val dx = current.x - start.x
+                val dy = current.y - start.y
+                if (dx != 0 || dy != 0) {
+                    onMove(origin.x + dx, origin.y + dy)
+                }
+                e.consume()
+            }
+
+            override fun mouseReleased(e: MouseEvent) {
+                dragStartInParent = null
+                panelStart = null
+                e.consume()
+            }
+        }
+        header.addMouseListener(drag)
+        header.addMouseMotionListener(drag)
+        kindLabel.addMouseListener(drag)
+        kindLabel.addMouseMotionListener(drag)
     }
 
     private fun handleWheel(e: MouseWheelEvent) {

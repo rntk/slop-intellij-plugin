@@ -286,3 +286,21 @@ internal fun floatingCardTop(anchorTop: Double, anchorBottom: Double, height: Do
     val lowest = viewHeight - margin - height
     return anchorTop.coerceAtMost(lowest).coerceAtLeast(margin)
 }
+
+/**
+ * Clamps a user-positioned floating card of [width]x[height] at ([x], [y]) to stay [margin] inside a view
+ * of [viewWidth]x[viewHeight], keeping its top-left reachable even when the card is larger than the view.
+ */
+internal fun clampedFloatingCardOrigin(
+    x: Int,
+    y: Int,
+    width: Int,
+    height: Int,
+    viewWidth: Int,
+    viewHeight: Int,
+    margin: Int,
+): Pair<Int, Int> {
+    val maxX = (viewWidth - margin - width).coerceAtLeast(margin)
+    val maxY = (viewHeight - margin - height).coerceAtLeast(margin)
+    return x.coerceIn(margin, maxX) to y.coerceIn(margin, maxY)
+}

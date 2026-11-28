@@ -271,4 +271,12 @@ class TreeBoardRailTest {
         assertNull(floatingCardTop(-40.0, -16.0, 200.0, 600.0, 12.0))
         assertNull(floatingCardTop(600.0, 624.0, 200.0, 600.0, 12.0))
     }
+
+    @Test fun `clampedFloatingCardOrigin keeps custom-placed card inside canvas margins`() {
+        assertEquals(200 to 150, clampedFloatingCardOrigin(200, 150, 300, 180, 1000, 700, 12))
+        assertEquals(12 to 12, clampedFloatingCardOrigin(-50, -20, 300, 180, 1000, 700, 12))
+        assertEquals(688 to 508, clampedFloatingCardOrigin(900, 650, 300, 180, 1000, 700, 12))
+        // Card larger than view pins its top-left at the margin instead of throwing or going negative.
+        assertEquals(12 to 12, clampedFloatingCardOrigin(80, 90, 400, 300, 200, 200, 12))
+    }
 }

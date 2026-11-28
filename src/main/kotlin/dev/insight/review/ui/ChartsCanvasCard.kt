@@ -63,6 +63,7 @@ import java.awt.FlowLayout
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.KeyboardFocusManager
+import java.awt.Point
 import com.intellij.ui.components.JBTextField
 import javax.swing.JComponent
 import javax.swing.JLabel
@@ -140,6 +141,8 @@ internal class ChartsViewState {
     var treePinnedPreview: String? = null
     /** The preview's width once the reader resized it. */
     var treePreviewWidth: Int? = null
+    /** Custom canvas-relative position of the Tree's floating summary card, or null for the default left-of-tree placement. */
+    var treeSummaryPosition: Point? = null
     var lineMetric: LineChartMetric? = null
     var radarSymbols = true
     /** Whether the radar spaces its rings logarithmically. */
@@ -457,6 +460,8 @@ internal class ChartsCanvasCard(
             pinnedPreviewChanged = { view.treePinnedPreview = it },
             previewWidth = view.treePreviewWidth,
             previewWidthChanged = { view.treePreviewWidth = it },
+            initialSummaryPosition = view.treeSummaryPosition,
+            summaryPositionChanged = { view.treeSummaryPosition = it },
         ).apply {
             preferredSize = Dimension(width, scaled(BOARD_HEIGHT))
             connectionSelection = treeConnectionSelection
