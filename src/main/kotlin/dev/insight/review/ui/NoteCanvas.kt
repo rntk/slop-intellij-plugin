@@ -175,8 +175,11 @@ internal class NoteCanvas(
         summariesCardBuilder.syncReview()
         topicsCardBuilder.syncReview()
         groupingCardBuilder.syncReview()
-        restyleReview(CanvasTabKey.Topics)
-        restyleReview(CanvasTabKey.Grouping)
+        if (topicsCardBuilder.view.showOnlyUnviewed) refreshCard(CanvasTabKey.Topics)
+        else restyleReview(CanvasTabKey.Topics)
+        if (groupingCardBuilder.view.showOnlyUnviewed) refreshCard(CanvasTabKey.Grouping)
+        else restyleReview(CanvasTabKey.Grouping)
+        extension?.syncReviewed()
     }
 
     private fun restyleReview(key: CanvasTabKey) {
@@ -236,6 +239,7 @@ internal class NoteCanvas(
         background = UIUtil.getPanelBackground()
         add(tabs, BorderLayout.CENTER)
         extension?.attach(::refreshCard)
+        extension?.attachReviewed(reviewed, ::toggleViewedPaths)
     }
 
     fun showNotes(state: CanvasState) {

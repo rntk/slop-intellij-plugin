@@ -35,7 +35,7 @@ internal class ChangeTopicHierarchyPanel(
 
     init {
         // A page grows by show more, and starts over with the level or the searches; a jump to a traced entry extends it.
-        val scope = listOf(state.level, state.topicFilter.trim(), state.summaryFilter.trim())
+        val scope = listOf(state.level, state.topicFilter.trim(), state.summaryFilter.trim(), state.showOnlyUnviewed)
         state.rowBudget(scope)
         state.reveal?.let { target -> cardsBefore(target)?.let { state.ensureRows(it + 1) } }
         rowLimit = state.rowBudget(scope)

@@ -63,11 +63,11 @@ internal class ChangeSummariesPanel(
             if (browse != null) {
                 val entries = state.explorerEntries(summaries)
                 entries.forEach { add(row(it, 0)) }
-                if (entries.isEmpty()) add(text("No summaries match the search.", cardWidth, italic(JBFont.label()), help).apply { name = "no-matches" })
+                if (entries.isEmpty()) add(text(state.emptyFilterMessage(), cardWidth, italic(JBFont.label()), help).apply { name = "no-matches" })
             }
             else addNode(tree.root, 0)
         }
-        else if (summaries.total > 0) add(text("No summaries match the search.", cardWidth, italic(JBFont.label()), help).apply { name = "no-matches" })
+        else if (summaries.total > 0) add(text(state.emptyFilterMessage(), cardWidth, italic(JBFont.label()), help).apply { name = "no-matches" })
         if (skipped > 0) add(text("+$skipped more — fold or pick a level", cardWidth, italic(JBFont.small()), help)
             .apply { name = "more"; border = pad(scaled(4), scaled(TOGGLE), scaled(4), 0) })
         add(text(if (browse != null) "Click a folder to browse its summaries, or a file to open it. Use Back or the breadcrumbs to return."

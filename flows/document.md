@@ -2,7 +2,7 @@
 
 Document is a reading view shared by Code Review and Diff Review. Readers follow source files or diffs as one continuous document, with file summaries alongside the evidence and folder, topic, or change-group context aligned in a hierarchy of side columns.
 
-Readers choose how much hierarchy to show while keeping the files visible, and can navigate from entries to focused chats, walls, or IDE source and diff views. Document and [Hierarchy](hierarchy.md) present the same review evidence from different reading perspectives.
+Readers choose how much hierarchy to show while keeping the files visible, can filter to **Show only unviewed** files, and can navigate from entries to focused chats, walls, or IDE source and diff views. Document and [Hierarchy](hierarchy.md) present the same review evidence from different reading perspectives.
 
 Clicking a context card or evidence block brings its first file into a readable view. Back or Escape returns to the previous scale and reading position. Both moves ease smoothly between detail and overview so readers can keep their bearings.
 

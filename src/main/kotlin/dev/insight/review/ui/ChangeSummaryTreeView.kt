@@ -540,7 +540,20 @@ internal class ChangeSummaryTreePanel(
             bottom = maxOf(bottom, end)
             return rect to end
         }
-        place(root, scaled(16), scaled(16), 0, null)
+        if (card.summaries.total > 0 && root.text.isEmpty() && root.children.isEmpty()) {
+            val empty = JLabel(state.emptyFilterMessage()).apply {
+                name = "no-matches"
+                font = UIUtil.getLabelFont().deriveFont(Font.ITALIC).zoomed(zoom)
+                foreground = UIUtil.getContextHelpForeground()
+            }
+            val size = empty.preferredSize
+            empty.setBounds(scaled(16), scaled(16), size.width, size.height)
+            add(empty)
+            right = empty.x + empty.width
+            bottom = empty.y + empty.height
+        } else {
+            place(root, scaled(16), scaled(16), 0, null)
+        }
         unused.forEach { editors.remove(it)?.editor?.let { editor -> Disposer.dispose(editor as Disposable) } }
         placeBlocks()
         raised.retainAll { it.parent === this }

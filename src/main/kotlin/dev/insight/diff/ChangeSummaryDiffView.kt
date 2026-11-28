@@ -60,7 +60,9 @@ internal class ChangeSummaryDiffPanel(
         val initial = visible.values.firstOrNull { it.identity == state.selected }
             ?: visible.values.firstOrNull { it.file is ReviewFile }
         if (initial != null) select(initial) else {
-            content.add(JLabel("No matching file diffs", SwingConstants.CENTER), BorderLayout.CENTER)
+            val emptyMessage = if (state.showOnlyUnviewed && state.fuzzy.isBlank() && state.crumbs.isEmpty()) "No unviewed files."
+                else "No matching file diffs"
+            content.add(JLabel(emptyMessage, SwingConstants.CENTER), BorderLayout.CENTER)
             rebuildTree()
         }
     }

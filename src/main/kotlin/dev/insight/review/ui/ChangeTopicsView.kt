@@ -25,6 +25,7 @@ import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewTopics
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.ReviewedFiles
 import dev.insight.review.SummaryNode
 import dev.insight.review.TopicNode
 import dev.insight.review.TopicOutline
@@ -80,8 +81,14 @@ internal data class TopicsCard(
  */
 internal enum class ChangeTopicsMode { HIERARCHY, RADAR, DOCUMENT }
 
-/** What the shown outline was filtered for: the card and both trimmed queries. */
-private data class OutlineFilter(val card: TopicsCard, val topicQuery: String, val summaryQuery: String)
+/** What the shown outline was filtered for: the card, both trimmed queries, and the unviewed filter. */
+private data class OutlineFilter(
+    val card: TopicsCard,
+    val topicQuery: String,
+    val summaryQuery: String,
+    val showOnlyUnviewed: Boolean,
+    val reviewedRevision: Int,
+)
 
 /**
  * The selected topic survives re-rendering and snapshot changes while a node with the same level and path exists, and is
@@ -94,7 +101,13 @@ internal class ChangeTopicsViewState(
     private val foldLargeOutline: Boolean = false,
     var mode: ChangeTopicsMode = ChangeTopicsMode.HIERARCHY,
 ) : SummaryTraceState(traceRoot = false) {
+    private var reviewed: ReviewedFiles? = null
+
+    constructor(foldLargeOutline: Boolean, reviewed: ReviewedFiles?) : this(foldLargeOutline) {
+        this.reviewed = reviewed
+    }
     var tagsCloud = false
+    var showOnlyUnviewed = false
     /** Whether the radar spaces its rings logarithmically, so small topics stay visible beside a huge one. */
     var radarSymbols = true
     var radarLog = false
@@ -116,7 +129,7 @@ internal class ChangeTopicsViewState(
     private val handFolded = hashSetOf<String>()
     /** While the summary field opens the topics above its matches, only topics folded by hand since then fold. */
     private val folds get() = if (summaryFilter.isBlank()) collapsed else handFolded
-    val filtering get() = topicFilter.isNotBlank() || summaryFilter.isNotBlank()
+    val filtering get() = topicFilter.isNotBlank() || summaryFilter.isNotBlank() || showOnlyUnviewed
 
     private var filterFor: OutlineFilter? = null
     private var full: TopicOutline? = null
@@ -133,17 +146,24 @@ internal class ChangeTopicsViewState(
     private fun outlines(card: TopicsCard): Pair<TopicOutline, TopicOutline> {
         val topicQuery = topicFilter.trim()
         val summaryQuery = summaryFilter.trim()
+        val onlyUnviewed = showOnlyUnviewed && reviewed != null
+        val reviewedRevision = if (onlyUnviewed) reviewed!!.revision else -1
         val previous = filterFor
-        if (previous == null || previous.card !== card || previous.topicQuery != topicQuery || previous.summaryQuery != summaryQuery) {
-            filterFor = OutlineFilter(card, topicQuery, summaryQuery)
-            if (previous != null && (previous.topicQuery != topicQuery || previous.summaryQuery != summaryQuery))
+        if (previous == null || previous.card !== card || previous.topicQuery != topicQuery ||
+            previous.summaryQuery != summaryQuery || previous.showOnlyUnviewed != onlyUnviewed ||
+            previous.reviewedRevision != reviewedRevision
+        ) {
+            filterFor = OutlineFilter(card, topicQuery, summaryQuery, onlyUnviewed, reviewedRevision)
+            if (previous != null && (previous.topicQuery != topicQuery || previous.summaryQuery != summaryQuery ||
+                    previous.showOnlyUnviewed != onlyUnviewed))
                 documentFiles = DocumentColumnsPanel.DOCUMENT_PAGE_FILES
             val outline = full.takeIf { previous?.card?.topics === card.topics } ?: topicOutline(card.topics)
             full = outline
-            shown = if (topicQuery.isEmpty() && summaryQuery.isEmpty()) outline else {
+            shown = if (topicQuery.isEmpty() && summaryQuery.isEmpty() && !onlyUnviewed) outline else {
                 val texts = card.summaries.fileTexts
                 val kept = card.topics.files.filter { file ->
-                    (topicQuery.isEmpty() || card.topics.labels[file.path]?.let { fuzzyMatches(topicQuery, it) } == true) &&
+                    (!onlyUnviewed || !reviewed!!.isReviewed(file.path)) &&
+                        (topicQuery.isEmpty() || card.topics.labels[file.path]?.let { fuzzyMatches(topicQuery, it) } == true) &&
                         (summaryQuery.isEmpty() || fuzzyMatches(summaryQuery, listOfNotNull(file.path, texts[file.path]).joinToString(" ")))
                 }
                 val paths = kept.mapTo(hashSetOf()) { it.path }
@@ -417,13 +437,27 @@ internal abstract class DocumentColumnsPanel(
         missingSummary: String = "No summary yet",
         loaded: Int = files.size,
         showMore: ((Int) -> Unit)? = null,
+    ) = layoutDocumentWithEmpty(files, summaries, allItems, depth, width, missingSummary, loaded, vocabulary.noFiles, showMore)
+
+    protected fun layoutDocumentWithEmpty(
+        files: List<ReviewSource>,
+        summaries: Map<String, String?>,
+        allItems: List<RailItem>,
+        depth: Int,
+        width: Int,
+        missingSummary: String = "No summary yet",
+        loaded: Int = files.size,
+        emptyMessage: String = vocabulary.noFiles,
+        showMore: ((Int) -> Unit)? = null,
     ) {
         val built = if (showMore == null) files.size else loaded.coerceIn(minOf(files.size, 1), files.size)
         val items = if (built == files.size) allItems else allItems.filter { it.first < built }
         val allFiles = files
         @Suppress("NAME_SHADOWING") val files = if (built == files.size) files else files.subList(0, built)
         if (files.isEmpty()) {
-            val empty = text(vocabulary.noFiles, scaled(320), font(JBFont.label()), help)
+            val empty = text(emptyMessage, scaled(320), font(JBFont.label()), help).apply {
+                if (emptyMessage != vocabulary.noFiles) name = "no-matches"
+            }
             add(empty.apply { setBounds(0, 0, scaled(320), preferredSize.height) })
             preferredSize = Dimension(scaled(320), empty.height)
             applyActive()

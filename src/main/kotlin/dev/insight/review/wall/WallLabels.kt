@@ -20,6 +20,8 @@ internal data class WallLabels(
     val canvasChatLinkTooltip: String,
     /** Painted on a wall without blocks. */
     val emptyWall: String,
+    /** Painted when all blocks are hidden by the unviewed filter. */
+    val emptyUnviewedWall: String = "No unviewed files.",
     /** The row a block without rows paints. */
     val emptyBlock: String,
     /** The row noting how many rows the line cap cut. */

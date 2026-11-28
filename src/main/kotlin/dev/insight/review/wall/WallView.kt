@@ -97,6 +97,13 @@ import kotlin.math.floor
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
+/** Optional reviewed/viewed tracking passed to [WallView] to mark files viewed and filter to unviewed files. */
+internal data class WallReviewSupport(
+    val isReviewed: (path: String) -> Boolean,
+    val setReviewed: (path: String, reviewed: Boolean) -> Unit,
+    val canReview: (path: String) -> Boolean = { true },
+)
+
 /**
  * A wall page: one custom-painted block per file on a pannable, zoomable surface, as a diff's `git diff` rows or a source file's
  * numbered lines. Blocks drag anywhere and come to front; their positions last while the scope stays the same, so the one [card]
@@ -135,6 +142,7 @@ internal class WallView(
     private var linkHost: WallLinkHost? = null
     private var canSummarize: ((path: String) -> Boolean)? = null
     private var onRemoveBlock: ((path: String) -> Unit)? = null
+    private var review: WallReviewSupport? = null
 
     internal constructor(
         labels: WallLabels,
@@ -157,6 +165,24 @@ internal class WallView(
         ownedScope = if (links.project != null && links.coroutineScope == null) {
             CoroutineScope(SupervisorJob() + Dispatchers.EDT)
         } else null
+    }
+
+    internal constructor(
+        labels: WallLabels,
+        openLine: (path: String, line: WallLine?) -> Unit,
+        showAll: () -> Unit,
+        chats: WallChats?,
+        highlighter: WallHighlighter?,
+        openOnCanvas: ((path: String) -> Unit)?,
+        onContext: ((block: WallBlock, line: WallLine?, point: RelativePoint) -> Unit)?,
+        summarize: ((path: String) -> Boolean)?,
+        cardWidthScale: Double,
+        links: WallLinkSupport,
+        loadChunk: Int = WALL_LOAD_CHUNK,
+        review: WallReviewSupport?,
+    ) : this(labels, openLine, showAll, chats, highlighter, openOnCanvas, onContext, summarize, cardWidthScale, links, loadChunk) {
+        this.review = review
+        unviewedLink.isVisible = review != null
     }
     private val label = JLabel().apply {
         foreground = UIUtil.getContextHelpForeground()
@@ -190,6 +216,15 @@ internal class WallView(
         font = JBFont.small()
         toolTipText = modeLinkTooltip()
     }
+    /** Filters the wall to unviewed files when [review] is available. */
+    internal var showOnlyUnviewed: Boolean = false
+        private set
+    private val unviewedLink = ActionLink(unviewedLinkText()) { setShowOnlyUnviewed(!showOnlyUnviewed) }.apply {
+        name = "${labels.id}-unviewed"
+        font = JBFont.small()
+        toolTipText = unviewedLinkTooltip()
+        isVisible = review != null
+    }
     /** Loads the next chunk of files when a large wall is chunked. */
     private val loadMoreLink = ActionLink("") { loadMore() }.apply {
         name = "${labels.id}-load-more"
@@ -202,6 +237,7 @@ internal class WallView(
         add(label)
         add(zoomLabel)
         add(modeLink)
+        add(unviewedLink)
         add(loadMoreLink)
         add(allLink)
         add(canvasChatLink)
@@ -348,16 +384,55 @@ internal class WallView(
     internal fun highlightedRows(path: String): Set<Int> =
         if (highlightedTarget?.first == path) highlightedTarget!!.second else emptySet()
 
+    private fun unviewedLinkText(): String = if (showOnlyUnviewed) "Show viewed" else "Only unviewed"
+
+    private fun unviewedLinkTooltip(): String =
+        if (showOnlyUnviewed) "Show viewed files on the wall again" else "Show only unviewed files on the wall"
+
+    private fun canReview(path: String): Boolean = review?.canReview(path) == true
+
+    private fun isViewed(path: String): Boolean = review?.let { it.canReview(path) && it.isReviewed(path) } == true
+
+    internal fun setShowOnlyUnviewed(onlyUnviewed: Boolean) {
+        if (review == null || showOnlyUnviewed == onlyUnviewed) return
+        showOnlyUnviewed = onlyUnviewed
+        unviewedLink.text = unviewedLinkText()
+        unviewedLink.toolTipText = unviewedLinkTooltip()
+        if (!onlyUnviewed) {
+            val raw = lastContent?.allPaths.orEmpty()
+            val needed = (minOf(loadChunk, raw.size) - loadedPaths.size).coerceAtLeast(0)
+            if (needed > 0) loadedPaths.addAll(selectNextWallPaths(raw, loadedPaths, needed))
+        }
+        lastContent?.let(::show)
+    }
+
+    internal fun syncReviewed() {
+        if (review == null) return
+        if (showOnlyUnviewed) lastContent?.let(::show)
+        else views.forEach { it.repaint() }
+    }
+
+    private fun toggleViewed(view: BlockView) {
+        val support = review ?: return
+        if (!support.canReview(view.block.path)) return
+        support.setReviewed(view.block.path, !support.isReviewed(view.block.path))
+        syncReviewed()
+    }
+
+    internal fun emptyWallMessage(): String =
+        if (showOnlyUnviewed && lastContent?.allPaths?.isNotEmpty() == true) labels.emptyUnviewedWall else labels.emptyWall
+
     private fun updateHeaderAndContinuation(wallScope: WallScope, shownCount: Int) {
         val total = allPaths.size
         val remaining = (total - shownCount).coerceAtLeast(0)
+        val base = labels.header(wallScope.title, total).let { if (showOnlyUnviewed) "$it · unviewed only" else it }
         if (remaining > 0) {
-            label.text = "${labels.header(wallScope.title, total)} · $shownCount shown"
+            label.text = "$base · $shownCount shown"
             loadMoreLink.text = wallLoadMoreHeaderText(shownCount, total, loadChunk)
             loadMoreLink.toolTipText = "Load up to $loadChunk more files onto the wall"
             loadMoreLink.isVisible = true
         } else {
-            label.text = labels.header(wallScope.title, total)
+            label.text = base
             loadMoreLink.isVisible = false
         }
     }
@@ -365,7 +440,7 @@ internal class WallView(
     /** Shows [content]; a new scope relays the blocks out, the same scope keeps where they were moved. */
     fun show(content: WallContent) {
         lastContent = content
-        val incomingAllPaths = content.allPaths
+        val incomingAllPaths = if (showOnlyUnviewed && review != null) content.allPaths.filterNot(::isViewed) else content.allPaths
         val prevAllPaths = allPaths
         val scopeChanged = content.scope != scope
         val wasEmpty = prevAllPaths.isEmpty() && shown.isEmpty()
@@ -536,6 +611,7 @@ internal class WallView(
 
     /** Ensures [path] is loaded onto the wall (adding it to [loadedPaths] and rebuilding if needed). */
     internal fun ensurePathLoaded(path: String): Boolean {
+        if (showOnlyUnviewed && isViewed(path)) setShowOnlyUnviewed(false)
         if (path in loadedPaths && views.any { it.block.path == path }) return true
         if (path !in allPaths && linkHost?.ensureCard(path, null, null) == null) return false
         if (mode == WallMode.CARDS && !arranged && views.isNotEmpty()) {
@@ -1881,6 +1957,9 @@ internal class WallView(
             Key("compact", listOf(key(KeyEvent.VK_C)), { activePath != null }) {
                 views.firstOrNull { it.block.path == activePath }?.let(::toggleCompact)
             },
+            Key("viewed", listOf(key(KeyEvent.VK_V)), { activePath?.let(::canReview) == true }) {
+                views.firstOrNull { it.block.path == activePath }?.let(::toggleViewed)
+            },
         )
     }
 
@@ -2038,7 +2117,7 @@ internal class WallView(
             if (views.isNotEmpty()) return
             g.color = UIUtil.getContextHelpForeground()
             g.font = JBFont.label()
-            g.drawString(labels.emptyWall, JBUI.scale(24), JBUI.scale(24) + g.fontMetrics.ascent)
+            g.drawString(emptyWallMessage(), JBUI.scale(24), JBUI.scale(24) + g.fontMetrics.ascent)
         }
     }
 
@@ -2108,6 +2187,10 @@ internal class WallView(
         /** Where the Summary switch was last painted, or null when the file has no summary and none can be asked for. */
         internal var summaryToggle: Rectangle? = null
             private set
+        /** Where the Viewed switch was last painted, or null when the file has no viewed state. */
+        internal var viewedToggle: Rectangle? = null
+            private set
+        internal val isViewed: Boolean get() = isViewed(block.path)
         private val summary: String? get() = summaries.text(block.path)
         /** Whether the file's summary is being written and has not arrived yet. */
         private val writingSummary: Boolean get() = summaries.isPending(block.path)
@@ -2136,6 +2219,10 @@ internal class WallView(
                     }
                     if (onSummaryToggle(e.point)) {
                         toggleSummary(this@BlockView)
+                        return
+                    }
+                    if (onViewedToggle(e.point)) {
+                        toggleViewed(this@BlockView)
                         return
                     }
                     if (onMenu(e.point)) {
@@ -2176,7 +2263,7 @@ internal class WallView(
                 /** Hands a popup trigger (press or release, by platform) to the host's [onContext]; true when it took the event. */
                 private fun contextMenu(e: MouseEvent): Boolean {
                     val host = onContext
-                    if (host == null || !e.isPopupTrigger || onToggle(e.point) || onSummaryToggle(e.point) || onMenu(e.point)) return false
+                    if (host == null || !e.isPopupTrigger || onHeaderControl(e.point)) return false
                     surface.requestFocusInWindow()
                     activate(this@BlockView)
                     host(block, lineAt(e.y), RelativePoint(e))
@@ -2184,7 +2271,7 @@ internal class WallView(
                     return true
                 }
                 override fun mouseClicked(e: MouseEvent) {
-                    if (!SwingUtilities.isLeftMouseButton(e) || onToggle(e.point) || onSummaryToggle(e.point) || onMenu(e.point) || onMoreLines(e.point)) return
+                    if (!SwingUtilities.isLeftMouseButton(e) || onHeaderControl(e.point) || onMoreLines(e.point)) return
                     if (e.clickCount == 2) {
                         if (!skim) stopAnimation()
                         openLine(block.path, lineAt(e.y))
@@ -2193,7 +2280,7 @@ internal class WallView(
                     }
                 }
                 override fun mouseMoved(e: MouseEvent) {
-                    cursor = if (onToggle(e.point) || onSummaryToggle(e.point) || onMenu(e.point) || onMoreLines(e.point)) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
+                    cursor = if (onHeaderControl(e.point) || onMoreLines(e.point)) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
                 }
             }
             addMouseListener(drag)
@@ -2269,7 +2356,15 @@ internal class WallView(
 
         private fun onSummaryToggle(point: Point) = summaryToggle?.contains(point) == true
 
+        private fun onViewedToggle(point: Point) = viewedToggle?.contains(point) == true
+
         private fun onMenu(point: Point) = menuToggle?.contains(point) == true
+
+        private fun onHeaderControl(point: Point) =
+            onToggle(point) || onSummaryToggle(point) || onViewedToggle(point) || onMenu(point)
+
+        private fun viewedTooltip(): String =
+            if (isViewed) "Mark this file as unviewed (V)" else "Mark this file as viewed (V)"
 
         internal fun canLoadMoreLines(): Boolean =
             skim && !replacesBody && !isFolded && block.hiddenLines > 0 && block.loadMore != null
@@ -2315,6 +2410,11 @@ internal class WallView(
             }
             item(if (showsSummary) "Hide summary" else SUMMARY, summaryTooltip, hasSummary(block.path)) {
                 toggleSummary(this@BlockView)
+            }
+            if (canReview(block.path)) {
+                item(if (isViewed) "Mark unviewed" else "Mark viewed", viewedTooltip(), true) {
+                    toggleViewed(this@BlockView)
+                }
             }
             // The Chat tab scrolls away with a tall skim block's top; its sticky header keeps the chat in reach.
             if (chats != null && skim) item(if (chatShown(block.path)) "Hide chat" else "Chat", labels.chatTabTooltip, true) {
@@ -2560,6 +2660,7 @@ internal class WallView(
         override fun getToolTipText(event: MouseEvent): String? = when {
             onToggle(event.point) -> compactTooltip()
             onSummaryToggle(event.point) -> summaryTooltip
+            onViewedToggle(event.point) -> viewedTooltip()
             onMenu(event.point) -> "More actions"
             onMoreLines(event.point) -> "Load the remaining ${block.hiddenLines} lines of this file"
             else -> null
@@ -2820,6 +2921,7 @@ internal class WallView(
             val split = title.lastIndexOf('/') + 1
             toggle = null
             summaryToggle = null
+            viewedToggle = null
             menuToggle = null
             if (sketch) {
                 g2.color = scheme.defaultForeground
@@ -2833,8 +2935,8 @@ internal class WallView(
             g2.color = muted
             g2.drawString(title.substring(0, split), x, baseline)
             x += fm.stringWidth(title.substring(0, split))
-            // A folded file reads as set aside.
-            g2.color = if (isFolded) muted else scheme.defaultForeground
+            // A folded or viewed file reads as set aside.
+            g2.color = if (isFolded || isViewed) muted else scheme.defaultForeground
             g2.drawString(title.substring(split), x, baseline)
             x += fm.stringWidth(title.substring(split)) + fm.charWidth(' ') * 2
             g2.color = ColorUtil.withAlpha(muted, 0.8)
@@ -2859,6 +2961,12 @@ internal class WallView(
                 g2.drawString(SUMMARY, x, baseline)
                 summaryToggle = Rectangle(x.toInt() - JBUI.scale(2), top, small.stringWidth(SUMMARY) + JBUI.scale(4), headerHeight.roundToInt())
                 x += small.stringWidth(SUMMARY) + small.charWidth(' ') * 2
+            }
+            if (canReview(block.path)) {
+                g2.color = if (isViewed) link else quiet
+                g2.drawString(VIEWED, x, baseline)
+                viewedToggle = Rectangle(x.toInt() - JBUI.scale(2), top, small.stringWidth(VIEWED) + JBUI.scale(4), headerHeight.roundToInt())
+                x += small.stringWidth(VIEWED) + small.charWidth(' ') * 2
             }
             // The menu sits at the header's right end, where the title cannot push it away.
             val menuWidth = small.stringWidth(MENU) + JBUI.scale(8)
@@ -3050,6 +3158,7 @@ internal class WallView(
         const val FOLD = "Fold"
         const val UNFOLD = "Unfold"
         const val SUMMARY = "Summary"
+        const val VIEWED = "Viewed"
         const val MENU = "..."
 
         /** The scheme's diff colour softened toward the background, so dozens of tinted blocks stay calm. */

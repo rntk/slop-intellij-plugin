@@ -10,9 +10,13 @@ import dev.insight.codereview.CodeWallContent
 import dev.insight.codereview.CodeWallView
 import dev.insight.context.ContextSummaryActions
 import dev.insight.diff.DIFFS_WALL_LABELS
+import dev.insight.diff.DiffsWallContent
+import dev.insight.diff.DiffsWallView
 import dev.insight.diff.ReviewFile
 import dev.insight.diff.wallBlock
+import dev.insight.review.ReviewedFiles
 import dev.insight.review.SummaryKind
+import java.awt.Component
 import java.awt.Container
 import java.awt.Dimension
 import java.awt.Point
@@ -686,6 +690,102 @@ class WallNavigationPlatformTest : BasePlatformTestCase() {
             assertTrue(wall.view.blocks.first().showsSummary)
             assertEquals(listOf("src/A.kt"), requested)
         } finally {
+            Disposer.dispose(wall)
+        }
+    }
+
+    fun testViewedToggleAndUnviewedFilterInCardsAndSkimModes() {
+        fun descendants(root: Container): List<Component> = root.components.flatMap {
+            listOf(it) + ((it as? Container)?.let(::descendants) ?: emptyList())
+        }
+        fun paintBlock(block: WallView.BlockView) {
+            val image = java.awt.image.BufferedImage(block.width.coerceAtLeast(1), block.height.coerceAtLeast(1), java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            val g = image.createGraphics()
+            try { block.paint(g) } finally { g.dispose() }
+        }
+        myFixture.addFileToProject("src/Extra.kt", "fun extra() = 1\n")
+        val files = listOf("src/A.kt", "src/B.kt", "docs/C.md").map {
+            ReviewFile(it, "/repo/$it", "old\n", "modified", "@@ -1 +1 @@\n-old\n+new\n", "1")
+        }
+        val reviewed = ReviewedFiles().apply { restore(files) }
+        val scope = WallScope(null, "All changes")
+        val wall = DiffsWallView(
+            { _, _ -> }, {}, project = project,
+            review = WallReviewSupport(reviewed::isReviewed, { path, value -> reviewed.set(listOf(path), value) }),
+        )
+        val plainWall = DiffsWallView({ _, _ -> }, {}, project = project)
+        try {
+            plainWall.show(DiffsWallContent(scope, files))
+            val plainPane = JScrollPane(plainWall.card).apply { setSize(1200, 800); relayout(this) }
+            assertFalse(descendants(plainPane).filterIsInstance<ActionLink>().single { it.name == "diffs-wall-unviewed" }.isVisible)
+            paintBlock(plainWall.view.blocks.first())
+            assertNull(plainWall.view.blocks.first().viewedToggle)
+            assertTrue(plainWall.view.blocks.first().buildMenu().components.filterIsInstance<JMenuItem>().none {
+                it.text == "Mark viewed" || it.text == "Mark unviewed"
+            })
+
+            wall.show(DiffsWallContent(scope, files))
+            val pane = JScrollPane(wall.card).apply { setSize(1200, 800); relayout(this) }
+            val surface = wall.view.blocks.first().parent as JComponent
+            val unviewedLink = descendants(pane).filterIsInstance<ActionLink>().single { it.name == "diffs-wall-unviewed" }
+            assertTrue(unviewedLink.isVisible)
+            assertEquals("Only unviewed", unviewedLink.text)
+
+            val first = wall.view.blocks.first()
+            paintBlock(first)
+            val toggle = first.viewedToggle!!
+            first.dispatchEvent(MouseEvent(first, MouseEvent.MOUSE_PRESSED, 0L, InputEvent.BUTTON1_DOWN_MASK,
+                toggle.centerX.toInt(), toggle.centerY.toInt(), 1, false, MouseEvent.BUTTON1))
+            assertTrue(reviewed.isReviewed("src/A.kt"))
+            assertTrue(first.isViewed)
+
+            // Menu item toggles viewed state back and forth.
+            first.buildMenu().components.filterIsInstance<JMenuItem>().single { it.text == "Mark unviewed" }.doClick()
+            assertFalse(reviewed.isReviewed("src/A.kt"))
+            first.buildMenu().components.filterIsInstance<JMenuItem>().single { it.text == "Mark viewed" }.doClick()
+            assertTrue(reviewed.isReviewed("src/A.kt"))
+
+            // Added non-diff source cards cannot be marked viewed.
+            assertTrue(wall.view.ensurePathLoaded("src/Extra.kt"))
+            relayout(pane)
+            val extra = wall.view.blocks.single { it.block.path == "src/Extra.kt" }
+            paintBlock(extra)
+            assertNull(extra.viewedToggle)
+
+            // Filtering hides viewed files and updates header link text.
+            unviewedLink.doClick()
+            relayout(pane)
+            assertTrue(wall.view.showOnlyUnviewed)
+            assertEquals("Show viewed", unviewedLink.text)
+            assertEquals(listOf("src/B.kt", "docs/C.md", "src/Extra.kt"), wall.view.blocks.map { it.block.path })
+
+            // Switch to Skim mode and mark the active file viewed with V: it disappears live.
+            press(surface, "M")
+            relayout(pane)
+            assertEquals(WallMode.SKIM, wall.view.mode)
+            assertTrue(wall.view.blocks.first().active)
+            press(surface, "V")
+            relayout(pane)
+            assertTrue(reviewed.isReviewed("src/B.kt"))
+            assertEquals(listOf("docs/C.md", "src/Extra.kt"), wall.view.blocks.map { it.block.path })
+
+            // Marking the last diff file viewed leaves only non-diff or empty message when no added cards exist.
+            press(surface, "V")
+            relayout(pane)
+            assertTrue(reviewed.isReviewed("docs/C.md"))
+            // Without Extra.kt, empty unviewed message is shown.
+            wall.show(DiffsWallContent(WallScope(null, "Just diffs"), files))
+            relayout(pane)
+            assertTrue(wall.view.blocks.isEmpty())
+            assertEquals("No unviewed files.", wall.view.emptyWallMessage())
+
+            unviewedLink.doClick()
+            relayout(pane)
+            assertFalse(wall.view.showOnlyUnviewed)
+            assertEquals("Only unviewed", unviewedLink.text)
+            assertEquals(files.map { it.path }, wall.view.blocks.map { it.block.path })
+        } finally {
+            Disposer.dispose(plainWall)
             Disposer.dispose(wall)
         }
     }

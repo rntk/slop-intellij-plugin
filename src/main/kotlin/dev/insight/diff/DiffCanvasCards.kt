@@ -22,6 +22,7 @@ import dev.insight.review.CanvasTabKey
 import dev.insight.review.ReviewNoteKey
 import dev.insight.review.ReviewSummaryTree
 import dev.insight.review.ReviewVocabulary
+import dev.insight.review.ReviewedFiles
 import dev.insight.review.WordScope
 import dev.insight.review.ui.CanvasExtension
 import dev.insight.review.ui.ChangeSummariesViewState
@@ -31,6 +32,7 @@ import dev.insight.review.ui.SummariesCard
 import dev.insight.review.ui.SummaryDiffView
 import dev.insight.review.wall.WallChats
 import dev.insight.review.wall.WallLine
+import dev.insight.review.wall.WallReviewSupport
 import kotlinx.coroutines.CoroutineScope
 import javax.swing.JPanel
 
@@ -109,12 +111,19 @@ internal class DiffCanvasCards(
 
     var content = DiffCanvasContent()
     private var refresh: (CanvasTabKey) -> Unit = {}
+    private var reviewed: ReviewedFiles? = null
+    private var toggleReviewed: ((List<String>, Boolean) -> Unit)? = null
     private val diffEditors = mutableMapOf<ReviewNoteKey, DiffFileEditor>()
     // One view for the tab session, so block positions survive canvas rebuilds.
     private val wallView = lazy {
         DiffsWallView(openWallDiff, showAllChanges, wallChats, project, openWallOnCanvas, openOnWall, reviewDestinations,
             contextSummaryActions, wallLinks?.scope,
-            { wallLinks?.allWallFiles?.invoke() ?: content.wall?.files.orEmpty() }, wallLinks?.summaryTree)
+            { wallLinks?.allWallFiles?.invoke() ?: content.wall?.files.orEmpty() }, wallLinks?.summaryTree,
+            review = reviewed?.let { r ->
+                WallReviewSupport(r::isReviewed, { path, value ->
+                    toggleReviewed?.invoke(listOf(path), value) ?: r.set(listOf(path), value)
+                })
+            })
     }
     private val wall by wallView
     /** What the Walkthrough page asks of the review; set by the tab before the page is shown. */
@@ -138,6 +147,15 @@ internal class DiffCanvasCards(
 
     override fun attach(refresh: (CanvasTabKey) -> Unit) {
         this.refresh = refresh
+    }
+
+    override fun attachReviewed(reviewed: ReviewedFiles, toggleReviewed: (List<String>, Boolean) -> Unit) {
+        this.reviewed = reviewed
+        this.toggleReviewed = toggleReviewed
+    }
+
+    override fun syncReviewed() {
+        if (wallView.isInitialized()) wall.syncReviewed()
     }
 
     override fun update() {

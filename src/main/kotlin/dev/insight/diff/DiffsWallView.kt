@@ -42,8 +42,10 @@ import dev.insight.review.wall.WallLabels
 import dev.insight.review.wall.WallLine
 import dev.insight.review.wall.WallLinkHost
 import dev.insight.review.wall.WallLinkSupport
+import dev.insight.review.wall.WallReviewSupport
 import dev.insight.review.wall.WallSyntax
 import dev.insight.review.wall.WallView
+import dev.insight.review.wall.WALL_SKIM_CONTROLS
 import dev.insight.review.wall.normalizeWallPath
 import dev.insight.review.wall.wallAddedSourceBlock
 import dev.insight.review.wall.wallExpandBlockForLine
@@ -80,7 +82,26 @@ internal class DiffsWallView(
     private val summaryTree: (() -> ReviewSummaryTree?)? = null,
     /** Number of diff blocks loaded per chunk so large changes stay responsive. */
     loadChunk: Int = WALL_LOAD_CHUNK,
+    /** Optional viewed/unviewed file tracking and filtering support. */
+    review: WallReviewSupport?,
 ) : Disposable {
+    internal constructor(
+        openDiff: (ReviewFile, WallLine?) -> Unit,
+        showAllChanges: () -> Unit,
+        chats: WallChats? = null,
+        project: Project? = null,
+        openOnCanvas: ((path: String, line: Int?) -> Unit)? = null,
+        openOnWall: ((List<ReviewFile>, String) -> Unit)? = null,
+        reviewDestinations: (() -> Map<dev.insight.context.ReviewDestination, () -> Unit>)? = null,
+        summaryActions: ContextSummaryActions? = null,
+        scope: CoroutineScope? = null,
+        allFiles: (() -> List<ReviewFile>)? = null,
+        summaryTree: (() -> ReviewSummaryTree?)? = null,
+        loadChunk: Int = WALL_LOAD_CHUNK,
+    ) : this(
+        openDiff, showAllChanges, chats, project, openOnCanvas, openOnWall, reviewDestinations,
+        summaryActions, scope, allFiles, summaryTree, loadChunk, null,
+    )
     private var files: List<ReviewFile> = emptyList()
     private var filesByPath: Map<String, ReviewFile> = emptyMap()
     private var baseContent: DiffsWallContent? = null
@@ -217,8 +238,12 @@ internal class DiffsWallView(
             onRemoveBlock = ::removeAdded,
         ),
         loadChunk = loadChunk,
+        review = review?.let { r -> r.copy(canReview = { path -> path !in addedSources && r.canReview(path) }) },
     )
     val card: JPanel get() = view.card
+
+    /** Updates the wall after reviewed marks change in another view. */
+    fun syncReviewed() = view.syncReviewed()
 
     private fun openWallTarget(path: String, line: WallLine?) {
         diffFileFor(path)?.let { openDiff(it, line); return }
@@ -351,10 +376,16 @@ internal val DIFFS_WALL_LABELS = WallLabels(
         |The wheel and scroll keys use the focused block where it can scroll and the canvas on other axes<br>
         |Esc restores canvas navigation. Press Esc again to clear the current block<br>
         |Skim above the wall, or M, reads every file whole in one column<br>
+        |Only unviewed above the wall hides viewed files<br>
         |Compact in a block's header, or C, caps a tall block; its diff scrolls inside<br>
         |Summary in a block's header shows the file's summary in place of its diff, writing it first when it has none<br>
+        |Viewed in a block's header, or V, marks the file viewed or unviewed<br>
         |Chat on a block's right edge unfolds a chat about that file's diff; Esc in it folds it again<br>
         |Chat about these changes, above the wall, opens a chat about every diff it shows</html>""".trimMargin(),
+    skimControls = WALL_SKIM_CONTROLS.replace(
+        "</html>",
+        "<br>Viewed in a header, or V, marks the file viewed or unviewed<br>Only unviewed above the wall hides viewed files</html>",
+    ),
     showAll = "Show all changes",
     canvasChatLink = "Chat about these changes",
     canvasChatLinkTooltip = "Chat about every diff on the wall",

@@ -56,7 +56,7 @@ internal class TopicsCanvasCard(
     private val project: Project? = null,
     private val labels: TopicsCardLabels = TopicsCardLabels(vocabulary.topicsTitle, vocabulary.topicsTooltip),
 ) : Disposable {
-    val view = ChangeTopicsViewState(vocabulary.foldLargeTopics)
+    val view = ChangeTopicsViewState(vocabulary.foldLargeTopics, reviewed)
     var scroll = 0
     private var content: TopicsCard? = null
     private var hierarchyPreview: HierarchyPreviewPanel? = null
@@ -177,6 +177,14 @@ internal class TopicsCanvasCard(
                     toolTipText = "Size summary words by their importance in the child summaries or file source"
                     addActionListener { view.tagsCloud = isSelected; canvasActions.refresh() }
                 })
+                add(JCheckBox("Show only unviewed", view.showOnlyUnviewed).apply {
+                    name = "topics-show-only-unviewed"
+                    isOpaque = false
+                    font = scaledFont(JBFont.small())
+                    cursor = Cursor.getDefaultCursor()
+                    toolTipText = "Show only unviewed files and their ${labels.plural}"
+                    addActionListener { view.showOnlyUnviewed = isSelected; canvasActions.refresh() }
+                })
                 add(viewSelector("topics-mode", ChangeTopicsMode.entries, view.mode, scaled(4), scaledFont(JBFont.small()),
                     { when (it) { ChangeTopicsMode.DOCUMENT -> "Document"; ChangeTopicsMode.HIERARCHY -> "Hierarchy"; ChangeTopicsMode.RADAR -> "Radar" } },
                     { when (it) {
@@ -226,10 +234,14 @@ internal class TopicsCanvasCard(
             val inner = width - scaled(2 * PADDING + 4) - scaled(16)
             add(JPanel(VerticalLayout(scaled(8))).apply {
                 isOpaque = false
-                if (shown.files.isEmpty() && outline.files.isNotEmpty()) add(JLabel("No files match the search.").apply {
-                    name = "topics-no-matches"
-                    font = scaledFont(JBFont.label()).deriveFont(java.awt.Font.ITALIC); foreground = UIUtil.getContextHelpForeground()
-                })
+                if (shown.files.isEmpty() && outline.files.isNotEmpty()) {
+                    val emptyMessage = if (view.showOnlyUnviewed && view.topicFilter.isBlank() && view.summaryFilter.isBlank())
+                        "No unviewed files." else "No files match the search."
+                    add(JLabel(emptyMessage).apply {
+                        name = "topics-no-matches"
+                        font = scaledFont(JBFont.label()).deriveFont(java.awt.Font.ITALIC); foreground = UIUtil.getContextHelpForeground()
+                    })
+                }
                 else if (radar) {
                     val chart = topicRadar(shown, view.radarLevel(outline), "Awaiting ${labels.singular}", view.radarSymbols)
                     val status = JLabel(radarStatus(chart, view.radarSeries)).apply {

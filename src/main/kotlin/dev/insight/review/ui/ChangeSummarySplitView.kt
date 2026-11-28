@@ -75,7 +75,7 @@ internal class ChangeSummarySplitPanel(
         state.update(tree)
         when {
             summaries.total == 0 -> message(vocabulary.noFiles)
-            !state.shows(tree.root, summaries) -> message("No summaries match the search.")
+            !state.shows(tree.root, summaries) -> message(state.emptyFilterMessage())
             else -> addNode(tree.root, 0)
         }
         treeRows.rows += pairs.map { it.first }

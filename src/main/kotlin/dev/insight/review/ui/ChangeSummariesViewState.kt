@@ -4,6 +4,7 @@ import dev.insight.review.ContextSummaryRequest
 import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSummariesMode
 import dev.insight.review.ReviewSummaryTree
+import dev.insight.review.ReviewedFiles
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
 import dev.insight.review.relatedSummaryNodes
@@ -23,8 +24,14 @@ internal data class SearchCrumb(
     val trace: SummaryTrace? = null,
 )
 
-/** What the shown nodes were computed for: the summaries, the trimmed search field and the last search. */
-private data class SummariesFilter(val summaries: ReviewSummaries, val query: String, val crumb: SearchCrumb?)
+/** What the shown nodes were computed for: the summaries, the trimmed search field, the last search, and unviewed filter. */
+private data class SummariesFilter(
+    val summaries: ReviewSummaries,
+    val query: String,
+    val crumb: SearchCrumb?,
+    val showOnlyUnviewed: Boolean,
+    val reviewedRevision: Int,
+)
 
 /**
  * Expansion and selection survive re-rendering and snapshot changes; they are keyed by node identity and shared by both
@@ -34,6 +41,11 @@ private data class SummariesFilter(val summaries: ReviewSummaries, val query: St
 internal class ChangeSummariesViewState(
     val filtering: Boolean = false,
 ) : SummaryTraceState() {
+    private var reviewed: ReviewedFiles? = null
+
+    constructor(reviewed: ReviewedFiles?, filtering: Boolean = false) : this(filtering) {
+        this.reviewed = reviewed
+    }
     var treeZoom: Double? = null
     /** Tree claim levels are independent of the folder levels in the other views. */
     var treeLevel = 2
@@ -49,6 +61,7 @@ internal class ChangeSummariesViewState(
     var mode = ReviewSummariesMode.HIERARCHY
     var tagsCloud = false
     var softWrap = false
+    var showOnlyUnviewed = false
     val expanded = hashSetOf<String>()
     private val seen = hashSetOf<String>()
     var selected: String? = null
@@ -132,28 +145,46 @@ internal class ChangeSummariesViewState(
     /** Files the document builds, a page at a time; survives rebuilds and starts again at one page when a search changes. */
     var documentFiles = DocumentColumnsPanel.DOCUMENT_PAGE_FILES
 
-    /** The nodes left by the searches and the search field, every match with the nodes above it; null hides nothing. */
+    /** The nodes left by the searches, the unviewed filter and the search field, every match with the nodes above it; null hides nothing. */
     fun shownNodes(summaries: ReviewSummaries): Set<String>? {
         val query = fuzzy.trim()
         val crumb = crumbs.lastOrNull()
-        val key = SummariesFilter(summaries, query, crumb)
+        val onlyUnviewed = showOnlyUnviewed && reviewed != null
+        val reviewedRevision = if (onlyUnviewed) reviewed!!.revision else -1
+        val key = SummariesFilter(summaries, query, crumb, onlyUnviewed, reviewedRevision)
         if (filterFor == key) return shown
         filterFor?.let { previous ->
-            if (previous.query != query || previous.crumb?.let { it.identity to it.query } != crumb?.let { it.identity to it.query })
+            if (previous.query != query || previous.crumb?.let { it.identity to it.query } != crumb?.let { it.identity to it.query } ||
+                previous.showOnlyUnviewed != onlyUnviewed)
                 documentFiles = DocumentColumnsPanel.DOCUMENT_PAGE_FILES
         }
         filterFor = key
         val searched = crumb?.shown
+        val base = if (!onlyUnviewed) searched else {
+            val tree = summaries.tree
+            val kept = hashSetOf<String>()
+            for (node in tree.nodes) {
+                if (searched != null && node.identity !in searched) continue
+                if ((node.kind != SummaryKind.FILE && node.kind != SummaryKind.CHUNK) || node.files.isEmpty() || reviewed!!.isReviewed(node)) continue
+                kept += node.identity
+                generateSequence(node.parent?.let(tree::get)) { current -> current.parent?.let(tree::get) }.forEach { parent ->
+                    val shownIdentity = tree.shown(parent.id).identity
+                    if (searched == null || shownIdentity in searched) kept += shownIdentity
+                    if (searched == null || parent.identity in searched) kept += parent.identity
+                }
+            }
+            kept
+        }
         opened = emptySet()
-        shown = if (query.isEmpty()) searched else {
+        shown = if (query.isEmpty()) base else {
             val tree = summaries.tree
             val above = hashSetOf<String>()
             val kept = hashSetOf<String>()
             for (node in tree.nodes) {
-                if (searched != null && node.identity !in searched || !fuzzyMatches(query, searchableText(node, summaries))) continue
+                if (base != null && node.identity !in base || !fuzzyMatches(query, searchableText(node, summaries))) continue
                 // A merged ancestor can have its own summary; its match belongs to the displayed folder.
                 val entry = tree.shown(node.id)
-                if (searched != null && entry.identity !in searched) continue
+                if (base != null && entry.identity !in base) continue
                 kept += entry.identity
                 generateSequence(tree.shownParent(entry)) { tree.shownParent(it) }.forEach { above += it.identity }
             }
@@ -163,7 +194,12 @@ internal class ChangeSummariesViewState(
         return shown
     }
 
+    fun emptyFilterMessage(): String =
+        if (showOnlyUnviewed && fuzzy.isBlank() && crumbs.isEmpty()) "No unviewed files." else "No summaries match the search."
+
     fun shows(node: SummaryNode, summaries: ReviewSummaries): Boolean = shownNodes(summaries)?.contains(node.identity) ?: true
+
+    fun isUnviewed(path: String): Boolean = !showOnlyUnviewed || reviewed?.isReviewed(path) != true
 
     /** Whether [node]'s children show: unfolded by hand, or above a match of the search field. */
     fun isOpen(node: SummaryNode, summaries: ReviewSummaries): Boolean {
@@ -273,7 +309,7 @@ internal class ChangeSummariesViewState(
     }
 
     /** A search tab's state starting from this one: the same mode, folding and searches so far. */
-    fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(filtering = true).also {
+    fun fork(): ChangeSummariesViewState = ChangeSummariesViewState(reviewed = reviewed, filtering = true).also {
         it.treeZoom = treeZoom
         it.treeLevel = treeLevel
         treeDiffSizes.forEach { (key, size) -> it.treeDiffSizes[key] = java.awt.Dimension(size) }
@@ -285,6 +321,7 @@ internal class ChangeSummariesViewState(
         it.mode = mode
         it.tagsCloud = tagsCloud
         it.softWrap = softWrap
+        it.showOnlyUnviewed = showOnlyUnviewed
         it.expanded += expanded
         it.seen += seen
         it.level = level

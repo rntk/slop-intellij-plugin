@@ -2,6 +2,7 @@ package dev.insight.review.ui
 
 import com.intellij.openapi.Disposable
 import dev.insight.review.CanvasTabKey
+import dev.insight.review.ReviewedFiles
 import javax.swing.JPanel
 import javax.swing.JSplitPane
 
@@ -16,6 +17,12 @@ internal interface CanvasExtension : Disposable {
 
     /** Applies the current content at the start of every full rebuild, before any card is built. */
     fun update()
+
+    /** Supplies the shared reviewed state and toggle callback once the canvas attaches. */
+    fun attachReviewed(reviewed: ReviewedFiles, toggleReviewed: (List<String>, Boolean) -> Unit) {}
+
+    /** Notifies extension pages that reviewed marks changed. */
+    fun syncReviewed() {}
 
     /** Pages placed after Topics and before the summaries, in order. */
     fun leadingCards(): Map<CanvasTabKey, JPanel>

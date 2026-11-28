@@ -72,7 +72,7 @@ internal class SummariesCanvasCards(
     /** Supplies the Diff mode; without one it shows the outline. */
     private val extension: CanvasExtension? = null,
 ) : Disposable {
-    val summariesView = ChangeSummariesViewState().apply { mode = ReviewSummariesMode.SPLIT }
+    val summariesView = ChangeSummariesViewState(reviewed = reviewed).apply { mode = ReviewSummariesMode.SPLIT }
     private var summaries: SummariesCard? = null
     private val currentCards = mutableMapOf<CanvasTabKey, JPanel>()
     private val zoom = 1.0
@@ -119,10 +119,10 @@ internal class SummariesCanvasCards(
     }
 
     private val mainSummaries = SummariesTab(CanvasTabKey.Summaries, summariesView)
-    private val hierarchySummaries = SummariesTab(CanvasTabKey.Hierarchy, ChangeSummariesViewState().apply {
+    private val hierarchySummaries = SummariesTab(CanvasTabKey.Hierarchy, ChangeSummariesViewState(reviewed = reviewed).apply {
         mode = ReviewSummariesMode.HIERARCHY
     })
-    private val documentSummaries = SummariesTab(CanvasTabKey.Document, ChangeSummariesViewState().apply {
+    private val documentSummaries = SummariesTab(CanvasTabKey.Document, ChangeSummariesViewState(reviewed = reviewed).apply {
         mode = ReviewSummariesMode.DOCUMENT
     })
     private val fixedTabs = listOf(mainSummaries, hierarchySummaries, documentSummaries)
@@ -215,6 +215,7 @@ internal class SummariesCanvasCards(
                     toolTipText = "Size summary words by their importance in the child summaries or file source"
                     addActionListener { summariesView.tagsCloud = isSelected; refreshSummaries(tab) }
                 })
+                if (compactControls) add(unviewedToggle(tab))
                 if (key == CanvasTabKey.Summaries || tab.search) add(viewSelector(
                     "summaries-mode", summaryModes(tab), summariesView.mode, scaled(4), scaledFont(JBFont.small()),
                     ::summaryModeLabel, ::summaryModeTooltip,
@@ -244,7 +245,7 @@ internal class SummariesCanvasCards(
                     }.apply { name = "close-search-tab"; cursor = Cursor.getDefaultCursor() })
                 }
             }, BorderLayout.WEST)
-            if (compactControls) add(summaryVersionRow(tab, original, includeVersions = false), BorderLayout.EAST)
+            if (compactControls) add(summaryVersionRow(tab, original, includeVersions = false, includeUnviewed = false), BorderLayout.EAST)
         }
         val panelActions = ChangeSummaryActions(
             contextProject = project,
@@ -407,7 +408,16 @@ internal class SummariesCanvasCards(
         return card
     }
 
-    private fun summaryVersionRow(tab: SummariesTab, content: SummariesCard, includeVersions: Boolean = true): JComponent =
+    private fun unviewedToggle(tab: SummariesTab): JCheckBox = JCheckBox("Show only unviewed", tab.view.showOnlyUnviewed).apply {
+        name = "summaries-show-only-unviewed"
+        isOpaque = false
+        font = scaledFont(JBFont.small())
+        cursor = Cursor.getDefaultCursor()
+        toolTipText = "Show only unviewed files and their folders"
+        addActionListener { tab.view.showOnlyUnviewed = isSelected; refreshSummaries(tab) }
+    }
+
+    private fun summaryVersionRow(tab: SummariesTab, content: SummariesCard, includeVersions: Boolean = true, includeUnviewed: Boolean = true): JComponent =
         JPanel(FlowLayout(FlowLayout.LEFT, scaled(6), scaled(4))).apply {
             isOpaque = false
             border = if (includeVersions) JBUI.Borders.empty(0, 12) else JBUI.Borders.empty()
@@ -426,6 +436,7 @@ internal class SummariesCanvasCards(
                 preferredSize = Dimension(scaled(260), preferredSize.height)
                 if (text != tab.view.fuzzy) text = tab.view.fuzzy
             })
+            if (includeUnviewed) add(unviewedToggle(tab))
             add(JButton("Cancel search").apply {
                 name = "summaries-cancel-search"
                 font = scaledFont(JBFont.small())
@@ -702,7 +713,8 @@ internal class SummariesCanvasCards(
     fun syncReview() {
         summaryTabs().forEach { tab ->
             summaries?.summaries?.let(tab.review::sync)
-            actions.restyleReview(tab.key)
+            if (tab.view.showOnlyUnviewed) refreshSummaries(tab)
+            else actions.restyleReview(tab.key)
         }
     }
 

@@ -35,6 +35,7 @@ internal fun summaryLinkTree(summaries: ReviewSummaries, visible: (SummaryNode) 
                     file?.let { listOf(SummaryLinkNode("$key/$index/file", it.label, it, file = true)) }.orEmpty()
                 } else emptyList()
             }
+            if (links.isNotEmpty() && children.isEmpty()) return@mapNotNull null
             SummaryLinkNode("$key/$index", segment.text.trim(), node, children = children, parts = listOf(SummaryPart(node.id, index)))
         }
         if (selected != null) return parts

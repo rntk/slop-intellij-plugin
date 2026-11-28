@@ -130,4 +130,21 @@ class SummaryLinkTreeTest {
         assertTrue(result.pathKeys("kt").isEmpty())
         assertTrue(result.pathKeys("").isEmpty())
     }
+
+    @Test fun filteringHidesClaimBranchesWhoseCitedFilesAreAllHidden() {
+        val single = summaryLinkTree(summaries(Summary(listOf(
+            SummarySegment("One theme", listOf(SummarySource.Claim(0, 0))),
+            SummarySegment("Another theme", listOf(SummarySource.Claim(1, 1))),
+        )))) { it.path != "a.kt" }
+        assertEquals("Another theme", single.text)
+        assertEquals(listOf("b.kt"), single.children.map { it.owner.path })
+
+        val multi = summaryLinkTree(summaries(Summary(listOf(
+            SummarySegment("One theme", listOf(SummarySource.Claim(0, 0))),
+            SummarySegment("Another theme", listOf(SummarySource.Claim(1, 0))),
+            SummarySegment("Third theme", listOf(SummarySource.Claim(1, 1))),
+        )))) { it.path != "a.kt" }
+        assertEquals(listOf("Another theme", "Third theme"), multi.children.map { it.text })
+        assertEquals(listOf("b.kt", "b.kt"), multi.children.flatMap { it.children }.map { it.owner.path })
+    }
 }

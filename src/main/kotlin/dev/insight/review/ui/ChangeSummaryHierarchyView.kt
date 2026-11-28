@@ -37,7 +37,13 @@ internal class ChangeSummaryHierarchyPanel(
         ids
     }.orEmpty()
     private val sources = tree.nodes.mapNotNull { it.file }.associateBy { it.path }
-    private fun previewNode(component: JComponent, node: SummaryNode) = preview(component, node.files.mapNotNull(sources::get))
+    private val visibleSources = tree.fileNodes.filter { it.file != null && state.shows(it, summaries) }
+        .associate { it.path to requireNotNull(it.file) }
+    private fun previewNode(component: JComponent, node: SummaryNode) {
+        val shown = node.files.mapNotNull(visibleSources::get)
+        val files = shown.ifEmpty { node.files.filter(state::isUnviewed).mapNotNull(sources::get) }
+        preview(component, files)
+    }
     private val trace = state.resultTrace
     private val marks = traceMarks(tree, trace)
     /** The first match of each related node, by identity; a trace's related list is recomputed on every read. */
@@ -50,14 +56,14 @@ internal class ChangeSummaryHierarchyPanel(
     init {
         state.update(tree)
         // A page grows by show more, and starts over with the level or the searches; a jump to a traced entry extends it.
-        val scope = listOf(tree.root.identity, state.selectedLevel, state.fuzzy.trim(), state.crumbs.lastOrNull()?.let { it.identity to it.query })
+        val scope = listOf(tree.root.identity, state.selectedLevel, state.fuzzy.trim(), state.showOnlyUnviewed, state.crumbs.lastOrNull()?.let { it.identity to it.query })
         state.rowBudget(scope)
         state.reveal?.let { target -> cardsBefore(target)?.let { state.ensureRows(it + 1) } }
         rowLimit = state.rowBudget(scope)
         cardWidth = measureCardWidth(tree.nodes.map(::title))
         when {
             summaries.total == 0 -> showEmpty(vocabulary.noFiles)
-            !state.shows(tree.root, summaries) -> showEmpty("No summaries match the search.", name = "no-matches")
+            !state.shows(tree.root, summaries) -> showEmpty(state.emptyFilterMessage(), name = "no-matches")
             else -> finish(place(tree.root, 0, 0, null) + scaled(ROW_GAP))
         }
     }
@@ -262,7 +268,16 @@ internal class ChangeSummaryDocumentPanel(
                 summaryLabel = "File summary",
             )
         }
-        layoutDocument(files, summaries.fileTexts, items, depth, width, missing, loaded) { next ->
+        layoutDocumentWithEmpty(
+            files,
+            summaries.fileTexts,
+            items,
+            depth,
+            width,
+            missing,
+            loaded,
+            emptyMessage = if (summaries.total == 0) vocabulary.noFiles else state.emptyFilterMessage(),
+        ) { next ->
             state.documentFiles = next
             actions.refresh()
         }
