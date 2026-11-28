@@ -11,7 +11,6 @@ import dev.insight.review.ReviewSummaries
 import dev.insight.review.ReviewSymbol
 import dev.insight.review.SummaryNode
 import dev.insight.review.TreeBriefer
-import dev.insight.review.TreeConnectionSite
 import dev.insight.llm.CompletionFn
 import kotlinx.coroutines.CoroutineScope
 
@@ -61,7 +60,6 @@ internal data class SummaryCanvasActions(
     val symbolSummaries: SymbolSummaryActions? = null,
     /** Finds files for a Charts query; null hides the search. */
     val chartSearch: ChartSearchActions? = null,
-    val explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
     /** Creates the model client for one-line Tree briefs; called off the EDT. Null hides the control. */
     val treeBriefer: (() -> TreeBriefer)? = null,
 )

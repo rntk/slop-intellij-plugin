@@ -62,7 +62,6 @@ import dev.insight.review.ui.NOTES_CHANGED
 import dev.insight.review.ui.NoteCanvas
 import dev.insight.review.ui.ChartSearchActions
 import dev.insight.review.ChartPathSearch
-import dev.insight.review.TreeConnectionExplainer
 import dev.insight.review.TreeBriefer
 import dev.insight.review.ReviewSummarySnapshot
 import dev.insight.review.ui.ReviewContextSummaryLauncher
@@ -191,10 +190,6 @@ internal class DiffReviewTab(
             },
         ),
         summaryActions = SummaryCanvasActions(
-            explainConnection = { from, to, site ->
-                val completion = complete ?: ChatSettings.getInstance().createClient()::complete
-                TreeConnectionExplainer.explainWithProgress(project, completion, from, to, site)
-            },
             treeBriefer = { TreeBriefer.forProject(project, complete ?: ChatSettings.getInstance().createClient()::complete) },
             chartSearch = ChartSearchActions(scope) {
                 val tools = diffReviewTools(captureContext()).filter { it.definition.name in DIFF_CHART_SEARCH_TOOLS }

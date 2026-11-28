@@ -55,11 +55,14 @@ internal data class TreeConnectionSite(
     val occurrences: List<TreeConnectionOccurrence> = emptyList(),
     val totalOccurrences: Int = occurrences.size,
 ) {
-    /** Completed Markdown for this directed edge in the live-source index. Accessed on the EDT. */
-    var explanation: String? = null
-
-    /** Completed one-line brief of how the source uses the target, shown beside Tree rows. Accessed on the EDT. */
+    /**
+     * Completed one-line brief of how the source uses the target, shown beside Tree rows and atop the link window.
+     * Accessed on the EDT.
+     */
     var brief: String? = null
+
+    /** Completed one-line briefs of single [occurrences] by index, shown beside their snippets. Accessed on the EDT. */
+    val occurrenceBriefs: MutableMap<Int, String> = HashMap()
 }
 
 internal data class TreeFileConnections(val incoming: Map<String, TreeConnectionSite>, val outgoing: Map<String, TreeConnectionSite>)

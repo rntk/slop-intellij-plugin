@@ -150,7 +150,8 @@ internal class TreeBoardPanel(
     private val openConnection: ((String, String, TreeConnectionSite, RelativePoint) -> Unit)? = null,
     private val openAt: ((String, Int) -> Unit)? = null,
     private val project: Project? = null,
-    explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
+    /** Writes the link window's one-line briefs, shared with the Tree's link briefs; null hides Summarize. */
+    connectionBriefing: TreeConnectionBriefing? = null,
     initialFocusSelection: TreeFocusSelection? = null,
     private val toggleFocus: ((String, Boolean) -> Unit)? = null,
     private val clearFocus: (() -> Unit)? = null,
@@ -511,7 +512,7 @@ internal class TreeBoardPanel(
         openAt = openAt,
         openContext = openConnection,
         project = project,
-        explainConnection = explainConnection,
+        briefing = connectionBriefing,
         anchorBounds = { link -> canvas.connectionAnchorBounds(link) },
         escape = { requestFocusInWindow() },
         changed = {
@@ -614,8 +615,13 @@ internal class TreeBoardPanel(
             canvas.invalidateRowWidth()
             loadSummaryLinks()
             updateConnectionStatus()
+            // The link window shows the same link briefs, so one written for the Tree appears there too.
+            connectionPreview.refreshBriefs()
             canvas.repaint()
         }
+
+    /** The file whose briefs were requested with Summarize (S), rather than only written from link windows. */
+    private val requestedBriefPath: String? get() = briefs?.takeIf { it.requested }?.path
 
     val cursorPath: String? get() = board.nodes.getOrNull(cursorIndex)?.entry?.path
     val hoveredPath: String? get() = board.nodes.getOrNull(hoveredIndex)?.entry?.path
@@ -1354,7 +1360,7 @@ internal class TreeBoardPanel(
     }
 
     private fun briefStatus(path: String): String {
-        val current = briefs?.takeIf { it.path == path } ?: return ""
+        val current = briefs?.takeIf { it.requested && it.path == path } ?: return ""
         val failed = if (current.failed > 0) " · ${current.failed} unavailable" else ""
         return if (current.running) " · Summarizing ${current.done} of ${current.total}…$failed" else " · Summarized$failed"
     }
@@ -2113,7 +2119,8 @@ internal class TreeBoardPanel(
                 is TreeBrief.Ready -> brief.text
             }
             if (path == current.path) {
-                return listOf(BriefSegment("— ", accentColor, text(current.file, "summarizing…")!!, current.file is TreeBrief.Ready))
+                val file = text(current.file, "summarizing…") ?: return emptyList()
+                return listOf(BriefSegment("— ", accentColor, file, current.file is TreeBrief.Ready))
             }
             val incoming = current.incoming[path]
             val outgoing = current.outgoing[path]
@@ -2293,7 +2300,7 @@ internal class TreeBoardPanel(
                 else "Show incoming and outgoing code connections (C)"
             }
             if (showRowActions(node) && briefButtonBounds(node)?.contains(event.point) == true) {
-                return if (briefs?.path == node.entry.path) "Hide one-line summaries (S)"
+                return if (requestedBriefPath == node.entry.path) "Hide one-line summaries (S)"
                 else "Summarize this file and how each linked file relates to it, beside the rows (S)"
             }
             if (showRowActions(node) && summaryButtonBounds(node)?.contains(event.point) == true) {
@@ -2383,7 +2390,7 @@ internal class TreeBoardPanel(
 
                     // Full-row highlight band
                     val isHoveredRow = i == hoveredIndex || i == hoveredLinkRow
-                    val isActiveTarget = node.entry.path == briefs?.path ||
+                    val isActiveTarget = node.entry.path == requestedBriefPath ||
                         node.entry.path == connectionSelection?.path ||
                         node.entry.path == sourcePreview.pinned?.path ||
                         node.entry.path == focusSelection?.path
@@ -2853,7 +2860,7 @@ internal class TreeBoardPanel(
         }
 
         private fun paintBriefButton(g: Graphics2D, x: Double, y: Double, path: String) {
-            val active = briefs?.path == path
+            val active = requestedBriefPath == path
             val half = (JBUI.scale(5) * viewport.zoom).coerceAtLeast(2.0)
             val gap = (JBUI.scale(3) * viewport.zoom).coerceAtLeast(1.5)
             val left = (x - half).roundToInt()

@@ -4,15 +4,12 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.service
-import com.intellij.openapi.diagnostic.ControlFlowException
-import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.editor.colors.EditorColorsManager
 import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.ui.popup.IconButton
 import com.intellij.ui.InplaceButton
 import com.intellij.ui.JBColor
-import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBScrollPane
@@ -28,12 +25,16 @@ import dev.insight.review.treePreviewPlacement
 import dev.insight.review.CodeSnippet
 import dev.insight.review.TreeConnectionOccurrence
 import dev.insight.review.TreeConnectionSite
+import dev.insight.review.TreeBrief
+import dev.insight.review.TreeConnectionBriefs
+import dev.insight.review.briefTreeConnection
+import com.intellij.platform.ide.progress.withBackgroundProgress
+import com.intellij.platform.util.progress.reportRawProgress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Cursor
@@ -56,43 +57,73 @@ import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.ScrollPaneConstants
-import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.Timer
 
 /**
+ * Writes the link window's one-line briefs from Tree paths. [link] is the brief the Tree shows beside the linked row and
+ * [occurrence] describes one occurrence; both store what they write on the site, so the Tree and the window share it.
+ * Each Summarize action calls [begin] once and shares the returned [Request] among its parallel calls, so the model
+ * client is created per action and follows the current settings.
+ */
+internal class TreeConnectionBriefing(val begin: () -> Request) {
+    constructor(
+        link: suspend (from: String, to: String, site: TreeConnectionSite) -> String,
+        occurrence: suspend (from: String, to: String, site: TreeConnectionSite, index: Int) -> String,
+    ) : this({ Request(link, occurrence) })
+
+    class Request(
+        val link: suspend (from: String, to: String, site: TreeConnectionSite) -> String,
+        val occurrence: suspend (from: String, to: String, site: TreeConnectionSite, index: Int) -> String,
+    )
+}
+
+/**
  * Floating preview window showing short, visually separated source-code snippets from both files
  * for every resolved occurrence (calls, usages, inheritance, imports) of a Tree connection link.
+ * The link's one-line brief sits under the title and each occurrence's brief beside its snippets.
  * Like the source preview, it docks to the board's edge beside the linked row and can be pinned and resized.
  */
 internal class TreeConnectionPreviewPanel(
     private val fromPath: String,
     private val toPath: String,
-    site: TreeConnectionSite,
+    private val site: TreeConnectionSite,
     pinned: Boolean,
     private val openAt: ((String, Int) -> Unit)? = null,
     private val openContext: (() -> Unit)? = null,
     private val onClose: () -> Unit = {},
-    project: Project? = null,
-    explain: (suspend () -> String)? = null,
+    private val project: Project? = null,
+    private val briefing: TreeConnectionBriefing? = null,
     private val onTogglePin: () -> Unit = {},
     onResize: (dx: Int, done: Boolean) -> Unit = { _, _ -> },
     private val onEscape: () -> Unit = {},
 ) : JPanel(BorderLayout()) {
 
-    internal var onExplanationShown: () -> Unit = {}
+    /** Called when briefs appear or change, which can change the window's height. */
+    internal var onBriefsShown: () -> Unit = {}
 
     val pair: Pair<String, String> get() = fromPath to toPath
-
-    // Asking for an explanation pins the window, so the answer doesn't vanish when the pointer moves on.
-    private val explanation = if (project != null && explain != null) {
-        TreeConnectionExplanationPanel(project, site, explain, onRequest = { if (!isPinned) onTogglePin() }) { onExplanationShown() }
-    } else null
 
     private val entries = site.occurrences.ifEmpty {
         listOf(TreeConnectionOccurrence(RelationKind.REFERENCE, site.fromLine, site.toLine))
     }
     private val total = maxOf(site.totalOccurrences, entries.size)
+
+    private val scope = project?.service<LinkedTextLinks>()?.coroutineScope
+    private var request: Job? = null
+    private var briefs = TreeConnectionBriefs.stored(site, site.occurrences.size)
+
+    private val linkBrief = TreeConnectionBriefLine("charts-tree-connection-link-brief", project, scope, BRIEF_WRAP_WIDTH) { onBriefsShown() }
+    private val occurrenceBriefs = List(site.occurrences.size.takeIf { it > 1 } ?: 0) {
+        TreeConnectionBriefLine("charts-tree-connection-occurrence-brief", project, scope, BRIEF_WRAP_WIDTH - 24) { onBriefsShown() }
+    }
+
+    // Asking for briefs pins the window, so they don't vanish when the pointer moves on.
+    private val summarizeButton = JButton("Summarize").apply {
+        name = "charts-tree-summarize-connection"
+        toolTipText = "Summarize this link and each occurrence in one line, reusing the Tree's link summary"
+        addActionListener { requestBriefs() }
+    }
 
     private val summaryLabel = JLabel().apply {
         name = "charts-tree-connection-summary"
@@ -127,8 +158,57 @@ internal class TreeConnectionPreviewPanel(
             revalidate()
         }
 
-    fun cancelExplanation() {
-        explanation?.cancel()
+    fun cancelBriefs() {
+        request?.cancel()
+    }
+
+    /** Shows the briefs stored on the site now, such as a link brief the Tree just wrote. */
+    fun refreshBriefs() {
+        if (request?.isActive == true) return
+        showBriefs(TreeConnectionBriefs.stored(site, site.occurrences.size))
+    }
+
+    private fun showBriefs(next: TreeConnectionBriefs) {
+        briefs = next
+        linkBrief.show(next.link)
+        occurrenceBriefs.forEachIndexed { index, line -> line.show(next.occurrences.getOrNull(index)) }
+        summarizeButton.isVisible = briefing != null && scope != null && !next.complete
+        summarizeButton.isEnabled = !next.running
+        revalidate()
+        repaint()
+        onBriefsShown()
+    }
+
+    private fun requestBriefs() {
+        val briefing = briefing ?: return
+        val launcher = scope ?: return
+        if (request?.isActive == true || project?.isDisposed != false) return
+        val write = briefing.begin()
+        if (!isPinned) onTogglePin()
+        val owner = project
+        // Closing the window cancels the request; finished briefs stay on the site for the next window and the Tree.
+        request = launcher.launch(Dispatchers.EDT) {
+            try {
+                withBackgroundProgress(owner, "Summarizing ${fileName(fromPath)} → ${fileName(toPath)}") {
+                    reportRawProgress { reporter ->
+                        briefTreeConnection(
+                            site, site.occurrences.size,
+                            briefLink = { write.link(fromPath, toPath, site) },
+                            briefOccurrence = { index -> write.occurrence(fromPath, toPath, site, index) },
+                            onUpdate = { briefs ->
+                                if (isActive) showBriefs(briefs)
+                                reporter.text("Summarized ${briefs.done} of ${briefs.total}")
+                                reporter.fraction(if (briefs.total > 0) briefs.done.toDouble() / briefs.total else null)
+                            },
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                // Cancelled from the IDE progress rather than by closing the window: keep finished briefs and allow another try.
+                if (isActive) showBriefs(TreeConnectionBriefs.stored(site, site.occurrences.size))
+                throw e
+            }
+        }
     }
 
     /** Distance from the window's top to its title's middle, to line the title up with the linked row. */
@@ -190,7 +270,7 @@ internal class TreeConnectionPreviewPanel(
             }
             val actionsRow = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(8), 0)).apply {
                 isOpaque = false
-                explanation?.let { add(it.button) }
+                add(summarizeButton)
                 if (openContext != null) {
                     add(ActionLink("Open context…") {
                         onClose()
@@ -213,8 +293,8 @@ internal class TreeConnectionPreviewPanel(
             add(actionsRow, BorderLayout.EAST)
         }
 
-        entries.forEach { occurrence ->
-            listPanel.add(occurrenceCard(occurrence, fromName, toName))
+        entries.forEachIndexed { index, occurrence ->
+            listPanel.add(occurrenceCard(occurrence, fromName, toName, occurrenceBriefs.getOrNull(index)))
         }
         if (total > entries.size) {
             listPanel.add(JLabel("+ ${total - entries.size} more occurrences").apply {
@@ -225,37 +305,32 @@ internal class TreeConnectionPreviewPanel(
             })
         }
 
-        add(header, BorderLayout.NORTH)
+        linkBrief.border = JBUI.Borders.compound(
+            JBUI.Borders.customLineBottom(JBColor.border()),
+            JBUI.Borders.empty(6, 10),
+        )
+        add(JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(header, BorderLayout.NORTH)
+            add(linkBrief, BorderLayout.SOUTH)
+        }, BorderLayout.NORTH)
         add(grip, BorderLayout.WEST)
+        add(scrollPane, BorderLayout.CENTER)
         updatePinned()
-        if (explanation != null) {
-            val splitter = OnePixelSplitter(true, EXPLANATION_SPLIT_PROPORTION).apply {
-                name = "charts-tree-connection-split"
-                setHonorComponentsMinimumSize(true)
-                firstComponent = scrollPane
-                secondComponent = explanation
-            }
-            add(splitter, BorderLayout.CENTER)
-        } else {
-            add(scrollPane, BorderLayout.CENTER)
-        }
+        showBriefs(briefs)
     }
 
     override fun getPreferredSize(): Dimension {
         val raw = super.getPreferredSize()
         val width = raw.width.coerceIn(JBUI.scale(MIN_WIDTH), JBUI.scale(MAX_WIDTH))
-        val height = if (explanation?.isVisible == true) {
-            raw.height.coerceIn(JBUI.scale(EXPLANATION_MIN_HEIGHT), JBUI.scale(EXPLANATION_MAX_HEIGHT))
-        } else {
-            raw.height.coerceAtMost(JBUI.scale(MAX_HEIGHT))
-        }
-        return Dimension(width, height)
+        return Dimension(width, raw.height.coerceAtMost(JBUI.scale(MAX_HEIGHT)))
     }
 
     private fun occurrenceCard(
         occurrence: TreeConnectionOccurrence,
         fromName: String,
         toName: String,
+        brief: TreeConnectionBriefLine?,
     ): JComponent {
         val fromLoc = "$fromName:${occurrence.fromLine ?: "?"}"
         val toLoc = occurrence.toLine?.let { "$toName:$it" } ?: toName
@@ -305,7 +380,17 @@ internal class TreeConnectionPreviewPanel(
         }
 
         card.add(cardHeader, BorderLayout.NORTH)
-        card.add(columns, BorderLayout.CENTER)
+        if (brief != null) {
+            // The occurrence's brief sits right above its own snippets, so each summary reads with the code it describes.
+            brief.border = JBUI.Borders.empty(6, 8, 0, 8)
+            card.add(JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(brief, BorderLayout.NORTH)
+                add(columns, BorderLayout.CENTER)
+            }, BorderLayout.CENTER)
+        } else {
+            card.add(columns, BorderLayout.CENTER)
+        }
         return card
     }
 
@@ -401,99 +486,97 @@ internal class TreeConnectionPreviewPanel(
     private companion object {
         const val MIN_WIDTH = 560
         const val MAX_WIDTH = 780
-        const val MAX_HEIGHT = 420
-        const val EXPLANATION_MIN_HEIGHT = 500
-        const val EXPLANATION_MAX_HEIGHT = 640
+        const val MAX_HEIGHT = 520
         const val MIN_PANE_HEIGHT = 80
-        const val EXPLANATION_SPLIT_PROPORTION = 0.48f
+        /** Wraps briefs at the narrowest window width, so they never widen the window. */
+        const val BRIEF_WRAP_WIDTH = MIN_WIDTH - 40
     }
 }
 
-private class TreeConnectionExplanationPanel(
-    private val project: Project,
-    private val site: TreeConnectionSite,
-    private val explain: suspend () -> String,
-    private val onRequest: () -> Unit = {},
-    private val onShown: () -> Unit = {},
+/**
+ * One brief in the link window: hidden until requested, then "Summarizing…", the written line with clickable code
+ * references, or a note that it is unavailable. It wraps at [wrapWidth] rather than widening the window.
+ */
+internal class TreeConnectionBriefLine(
+    name: String,
+    private val project: Project?,
+    private val scope: kotlinx.coroutines.CoroutineScope?,
+    private val wrapWidth: Int,
+    private val onShown: () -> Unit,
 ) : JPanel(BorderLayout()) {
-    private val scope = project.service<LinkedTextLinks>().coroutineScope
-    private var request: Job? = null
+    private var shown: TreeBrief? = null
+    private var measurement: WrappedTextMeasurement? = null
 
-    val button = JButton("Explain connection").apply {
-        name = "charts-tree-explain-connection"
-        addActionListener { requestExplanation() }
-    }
+    /** The brief's text as shown, for tests. */
+    internal var text: String? = null
+        private set
 
     init {
-        name = "charts-tree-connection-explanation"
-        minimumSize = Dimension(0, JBUI.scale(80))
+        this.name = name
+        isOpaque = false
         isVisible = false
-        site.explanation?.let(::showSummary)
     }
 
-    fun cancel() {
-        request?.cancel()
-    }
-
-    private fun requestExplanation() {
-        if (request?.isActive == true || project.isDisposed) return
-        onRequest()
-        button.isEnabled = false
-        showStatus("Explaining connection…")
-        request = scope.launch(Dispatchers.EDT) {
-            try {
-                val summary = withContext(Dispatchers.IO) { explain() }
-                check(summary.isNotBlank()) { "The model returned an empty explanation" }
-                showSummary(summary)
-                site.explanation = summary
-            } catch (e: CancellationException) {
-                // Cancelled from the progress UI rather than by closing the preview: allow another attempt.
-                if (isActive) {
-                    showStatus("Explanation cancelled.")
-                    button.isEnabled = true
-                }
-                throw e
-            } catch (e: Exception) {
-                if (e is ControlFlowException) throw e
-                logger<TreeConnectionExplanationPanel>().warn("Could not explain tree connection", e)
-                showStatus("Could not explain this connection. Try again.")
-                button.isEnabled = true
+    fun show(brief: TreeBrief?) {
+        if (brief == shown) return
+        shown = brief
+        removeAll()
+        measurement = null
+        isVisible = brief != null
+        text = when (brief) {
+            null -> null
+            TreeBrief.Pending -> "Summarizing…"
+            TreeBrief.Failed -> "Summary unavailable"
+            is TreeBrief.Ready -> brief.text
+        }
+        val content = text ?: return
+        val component: javax.swing.text.JTextComponent = if (brief is TreeBrief.Ready && project != null && scope != null) {
+            LinkedTextPane(project, scope).apply {
+                font = JBFont.small()
+                markdown = content
+                onRendered = { this@TreeConnectionBriefLine.revalidate(); onShown() }
+            }
+        } else {
+            WrappedText(content, JBUI.scale(wrapWidth)).apply {
+                isEditable = false
+                isOpaque = false
+                lineWrap = true
+                wrapStyleWord = true
+                border = JBUI.Borders.empty()
+                font = JBFont.small()
+                if (brief !is TreeBrief.Ready) foreground = UIUtil.getContextHelpForeground()
             }
         }
-    }
-
-    private fun showSummary(summary: String) {
-        button.isEnabled = false
-        val pane = LinkedTextPane(project, scope).apply {
-            border = JBUI.Borders.empty(8, 10)
-            markdown = summary
-        }
-        showContent(JBScrollPane(pane).apply {
-            border = JBUI.Borders.empty()
-            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
-            verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
-            verticalScrollBar.unitIncrement = JBUI.scale(16)
-        })
-        onShown()
-    }
-
-    private fun showStatus(message: String) {
-        showContent(JLabel(message).apply {
-            border = JBUI.Borders.empty(8, 10)
-            foreground = UIUtil.getContextHelpForeground()
-            verticalAlignment = SwingConstants.TOP
-        })
-    }
-
-    private fun showContent(content: JComponent) {
-        removeAll()
-        add(content, BorderLayout.CENTER)
-        isVisible = true
+        if (component is LinkedTextPane) measurement = WrappedTextMeasurement(component, measuredWidth())
+        add(component, BorderLayout.CENTER)
         revalidate()
         repaint()
-        parent?.revalidate()
-        parent?.repaint()
     }
+
+    /** The width the brief wraps at: the allocated one once laid out, since the window can be narrower than [wrapWidth]. */
+    private fun measuredWidth(): Int = (width - insets.left - insets.right).takeIf { it > 0 } ?: JBUI.scale(wrapWidth)
+
+    override fun setBounds(x: Int, y: Int, width: Int, height: Int) {
+        val resized = width != this.width
+        super.setBounds(x, y, width, height)
+        val measure = measurement ?: return
+        if (!resized || width <= 0) return
+        val before = measure.preferredSize()?.height
+        measure.wrapAt(measuredWidth())
+        if (measure.preferredSize()?.height == before) return
+        // The wrapped height changed: lay out again and let the window fit its new height.
+        revalidate()
+        SwingUtilities.invokeLater(onShown)
+    }
+
+    override fun getPreferredSize(): Dimension {
+        val measured = measurement?.preferredSize() ?: return super.getPreferredSize()
+        val insets = insets
+        // Report the intended wrap width so the brief never asks to widen the window, and the height at the actual width.
+        return Dimension(JBUI.scale(wrapWidth) + insets.left + insets.right, measured.height + insets.top + insets.bottom)
+    }
+
+    override fun getMinimumSize(): Dimension = Dimension(0, preferredSize.height)
 }
 
 /** Compact read-only code snippet renderer with line numbers and highlight on [CodeSnippet.highlightLine]. */
@@ -582,7 +665,8 @@ internal class TreeConnectionPreviewController(
     private val openAt: ((String, Int) -> Unit)? = null,
     private val openContext: ((String, String, TreeConnectionSite, RelativePoint) -> Unit)? = null,
     private val project: Project? = null,
-    private val explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
+    /** Writes the window's link and occurrence briefs; null hides Summarize. */
+    private val briefing: TreeConnectionBriefing? = null,
     /** The link's anchor bounds on [host], or null while it is hidden. */
     private val anchorBounds: (TreeConnectionTarget) -> Rectangle? = { null },
     /** Returns keyboard focus to the board, on Escape inside the window. */
@@ -665,6 +749,11 @@ internal class TreeConnectionPreviewController(
         apply(force = true)
     }
 
+    /** Shows briefs written elsewhere, such as the Tree's link briefs, in the open window. */
+    fun refreshBriefs() {
+        activePanel?.refreshBriefs()
+    }
+
     /** Closes the window and forgets the hovered and pinned links, as when the links change. */
     fun hide() {
         timer.stop()
@@ -705,7 +794,7 @@ internal class TreeConnectionPreviewController(
 
     private fun close(notify: Boolean = true) {
         val panel = activePanel ?: return
-        panel.cancelExplanation()
+        panel.cancelBriefs()
         host.remove(panel)
         activePanel = null
         target = null
@@ -728,7 +817,7 @@ internal class TreeConnectionPreviewController(
             },
             onClose = { dismiss() },
             project = project,
-            explain = explainConnection?.let { callback -> suspend { callback(from, to, site) } },
+            briefing = briefing,
             onTogglePin = { togglePin(link) },
             onResize = { dx, _ -> resizeBy(dx) },
             onEscape = {
@@ -736,7 +825,7 @@ internal class TreeConnectionPreviewController(
                 escape()
             },
         )
-        panel.onExplanationShown = { if (activePanel === panel) position() }
+        panel.onBriefsShown = { if (activePanel === panel) position() }
         return panel
     }
 

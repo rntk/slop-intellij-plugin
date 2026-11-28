@@ -44,8 +44,10 @@ import dev.insight.review.ReviewedFiles
 import dev.insight.review.SourceOutlines
 import dev.insight.review.SummaryKind
 import dev.insight.review.SummaryNode
+import dev.insight.review.SharedCalls
 import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnectionIndex
+import dev.insight.review.TreeBrief
 import dev.insight.review.TreeBriefer
 import dev.insight.review.TreeBriefs
 import dev.insight.review.TreeRailMode
@@ -180,7 +182,6 @@ internal class ChartsCanvasCard(
     private val symbolSummaries: SymbolSummaryActions? = null,
     /** Finds files for a query typed above the hierarchy; null hides the search. */
     private val search: ChartSearchActions? = null,
-    private val explainConnection: (suspend (String, String, TreeConnectionSite) -> String)? = null,
     /** Creates the model client behind Tree one-line briefs; called off the EDT. Null hides the control. */
     private val treeBriefer: (() -> TreeBriefer)? = null,
     private val reviewed: ReviewedFiles? = null,
@@ -195,6 +196,8 @@ internal class ChartsCanvasCard(
     private val pendingSymbols = mutableSetOf<String>()
     private val symbolErrors = mutableMapOf<String, String>()
     private val treeConnectionScope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
+    // The Tree and a link window asking for the same link brief at once share one model request.
+    private val linkBriefCalls = SharedCalls<TreeConnectionSite, String>(treeConnectionScope)
     private var treeConnectionJob: Job? = null
     private var treeFocusJob: Job? = null
     private var treeConnectionIndex: TreeFileConnectionIndex? = null
@@ -379,9 +382,7 @@ internal class ChartsCanvasCard(
             },
             openAt = openAt ?: { path, _ -> open(path) },
             project = project,
-            explainConnection = explainConnection?.let { explain ->
-                { from, to, site -> explain(projectPath(hierarchy, from), projectPath(hierarchy, to), site) }
-            },
+            connectionBriefing = connectionBriefing(hierarchy),
             toggleConnections = treeConnectionIndex?.let { index -> { path -> toggleTreeConnections(index, path) } },
             toggleBriefs = treeConnectionIndex?.takeIf { treeBriefer != null }?.let { index ->
                 { path -> toggleTreeBriefs(index, hierarchy, path) }
@@ -658,7 +659,7 @@ internal class ChartsCanvasCard(
     private fun toggleTreeBriefs(index: TreeFileConnectionIndex, hierarchy: ReviewLineChart, path: String) {
         val newBriefer = treeBriefer ?: return
         treeBriefJob?.cancel()
-        if (treeBriefs?.path == path) {
+        if (treeBriefs?.takeIf { it.requested }?.path == path) {
             showTreeBriefs(null)
             if (treeConnectionSelection?.connections == null) showTreeConnections(null)
             return
@@ -688,11 +689,7 @@ internal class ChartsCanvasCard(
                         path, connections,
                         linked = { drawn == null || it in drawn },
                         briefFile = ::fileSummaryBrief,
-                        briefLink = { from, to, site ->
-                            site.brief ?: withContext(Dispatchers.IO) {
-                                briefer.link(projectPath(hierarchy, from), projectPath(hierarchy, to), site)
-                            }.also { site.brief = it }
-                        },
+                        briefLink = { from, to, site -> linkBrief(hierarchy, { briefer }, from, to, site) },
                         onUpdate = { if (isActive) onUpdate(it) },
                     )
                 }
@@ -715,6 +712,63 @@ internal class ChartsCanvasCard(
                 throw e
             }
         }
+    }
+
+    /**
+     * How [from] uses [to] in one line: the same brief beside the Tree row and atop the link window, written once per
+     * link and stored on [site]. Callers asking for the same link at once share one request. Runs on the EDT; the model
+     * call runs off it.
+     */
+    private suspend fun linkBrief(hierarchy: ReviewLineChart, briefer: () -> TreeBriefer, from: String, to: String, site: TreeConnectionSite): String =
+        site.brief ?: linkBriefCalls.await(site) {
+            site.brief ?: withContext(Dispatchers.IO) {
+                briefer().link(projectPath(hierarchy, from), projectPath(hierarchy, to), site)
+            }.also { site.brief = it }
+        }
+
+    /**
+     * The link window's briefs: the Tree's link brief, reused or written the same way, and one per occurrence. Each
+     * Summarize action creates its own client, so changed model settings apply to the next action.
+     */
+    private fun connectionBriefing(hierarchy: ReviewLineChart): TreeConnectionBriefing? {
+        val newBriefer = treeBriefer ?: return null
+        return TreeConnectionBriefing {
+            val created by lazy(newBriefer)
+            val briefer = { created }
+            TreeConnectionBriefing.Request(
+                link = { from, to, site ->
+                    val known = site.brief
+                    linkBrief(hierarchy, briefer, from, to, site).also { if (known == null) linkBriefWritten(from, to, it) }
+                },
+                occurrence = { from, to, site, index ->
+                    site.occurrenceBriefs[index] ?: withContext(Dispatchers.IO) {
+                        briefer().occurrence(projectPath(hierarchy, from), projectPath(hierarchy, to), site, index)
+                    }.also { site.occurrenceBriefs[index] = it }
+                },
+            )
+        }
+    }
+
+    /**
+     * Shows a link brief the link window wrote beside its Tree row too: within the Tree's briefs when it shows that
+     * link's, or on its own while the Tree shows the connections of either end.
+     */
+    private fun linkBriefWritten(from: String, to: String, text: String) {
+        val connections = treeConnectionSelection?.takeIf { it.path == from || it.path == to }?.connections
+        val current = treeBriefs?.takeIf { it.requested || it.path == treeConnectionSelection?.path }
+            ?: treeConnectionSelection?.takeIf { connections != null }?.let { TreeBriefs(it.path, file = null) }
+            ?: return
+        fun shows(briefs: Map<String, TreeBrief>, links: Map<String, TreeConnectionSite>?, other: String) =
+            briefs[other] !is TreeBrief.Ready && (other in briefs || !current.requested && links?.containsKey(other) == true)
+        val ready = TreeBrief.Ready(text)
+        val next = when {
+            current.path == to && shows(current.incoming, connections?.incoming, from) ->
+                current.copy(incoming = current.incoming + (from to ready))
+            current.path == from && shows(current.outgoing, connections?.outgoing, to) ->
+                current.copy(outgoing = current.outgoing + (to to ready))
+            else -> return
+        }
+        showTreeBriefs(next)
     }
 
     private fun showTreeBriefs(briefs: TreeBriefs?) {

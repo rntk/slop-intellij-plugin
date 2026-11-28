@@ -1,11 +1,10 @@
 package dev.insight.review.ui
 
+import com.intellij.openapi.components.service
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase
-import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.ActionLink
-import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import dev.insight.codereview.CodeFile
@@ -21,6 +20,7 @@ import dev.insight.review.SummaryKind
 import dev.insight.review.TreeBrief
 import dev.insight.review.TreeBriefer
 import dev.insight.review.TreeBriefs
+import dev.insight.review.TreeConnectionOccurrence
 import dev.insight.review.TreeConnectionSite
 import dev.insight.review.TreeFileConnections
 import dev.insight.review.buildSummaryTree
@@ -48,122 +48,89 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         board.canvas.dispatchEvent(MouseEvent(board.canvas, MouseEvent.MOUSE_CLICKED, 0, 0, x, y, 1, false, MouseEvent.BUTTON1))
     }
 
-    fun testPinnedConnectionExplainsOnDemandWithLinkedMarkdown() {
+    private fun briefLine(panel: JComponent, name: String) =
+        descendants(panel).filterIsInstance<TreeConnectionBriefLine>().filter { it.name == name }
+
+    fun testConnectionWindowBriefsEachOccurrenceBesideItsSnippetsAndReusesTheLinkBrief() {
         myFixture.addFileToProject("src/B.java", "class B {}")
-        val requests = AtomicInteger()
-        val response = CompletableDeferred<String>()
-        val site = TreeConnectionSite(1, 1)
+        val occurrenceRequests = AtomicInteger()
+        val linkRequests = AtomicInteger()
+        val response = CompletableDeferred<Unit>()
+        val site = TreeConnectionSite(1, 1, listOf(
+            TreeConnectionOccurrence(RelationKind.CALL, 1, 1),
+            TreeConnectionOccurrence(RelationKind.REFERENCE, 2, 1),
+        )).apply { brief = "uses `B` to build reports" }
+        val briefing = TreeConnectionBriefing(
+            link = { _, _, edge -> linkRequests.incrementAndGet(); edge.brief ?: "unused" },
+            occurrence = { _, _, edge, index ->
+                occurrenceRequests.incrementAndGet()
+                response.await()
+                "occurrence ${index + 1} calls `src/B.java:L1`".also { edge.occurrenceBriefs[index] = it }
+            },
+        )
         fun preview(edge: TreeConnectionSite) = TreeConnectionPreviewPanel(
-            "src/A.java", "src/B.java", edge, pinned = true,
-            project = project,
-            explain = { requests.incrementAndGet(); response.await() },
+            "src/A.java", "src/B.java", edge, pinned = true, project = project, briefing = briefing,
         )
         val panel = preview(site)
         try {
-            val button = descendants(panel).filterIsInstance<JButton>()
-                .single { it.name == "charts-tree-explain-connection" }
-            val explanation = descendants(panel).filterIsInstance<JComponent>()
-                .single { it.name == "charts-tree-connection-explanation" }
-            assertEquals(0, requests.get())
-            assertFalse(explanation.isVisible)
+            // The Tree's link brief shows at once; each occurrence waits for Summarize.
+            assertEquals("uses `B` to build reports", briefLine(panel, "charts-tree-connection-link-brief").single().text)
+            val occurrences = briefLine(panel, "charts-tree-connection-occurrence-brief")
+            assertEquals(2, occurrences.size)
+            assertTrue(occurrences.none { it.isVisible })
+            // Each occurrence brief belongs to its own occurrence card.
+            val cards = descendants(panel).filterIsInstance<JComponent>().filter { it.name == "charts-tree-connection-occurrence" }
+            assertEquals(2, cards.size)
+            cards.zip(occurrences).forEach { (card, line) -> assertTrue(descendants(card).contains(line)) }
 
+            val button = descendants(panel).filterIsInstance<JButton>().single { it.name == "charts-tree-summarize-connection" }
+            assertTrue(button.isVisible)
             button.doClick()
-            PlatformTestUtil.waitWithEventsDispatching("Explanation should start on request", { requests.get() == 1 }, 10)
-            assertTrue(explanation.isVisible)
+            PlatformTestUtil.waitWithEventsDispatching("Occurrence briefs should start", { occurrenceRequests.get() == 2 }, 10)
+            assertEquals(listOf("Summarizing…", "Summarizing…"), occurrences.map { it.text })
             assertFalse(button.isEnabled)
-            assertTrue(descendants(explanation).filterIsInstance<JLabel>().any { it.text.contains("Explaining") })
 
-            val markdown = "Calls the declaration in `src/B.java:L1`."
-            response.complete(markdown)
-            PlatformTestUtil.waitWithEventsDispatching("Explanation should display", {
-                descendants(explanation).filterIsInstance<LinkedTextPane>().isNotEmpty()
+            response.complete(Unit)
+            PlatformTestUtil.waitWithEventsDispatching("Occurrence briefs should display", {
+                occurrences.all { it.text?.startsWith("occurrence") == true }
             }, 10)
-            val text = descendants(explanation).filterIsInstance<LinkedTextPane>().single()
-            assertEquals(markdown, text.markdown)
-            text.addNotify()
-            try {
-                PlatformTestUtil.waitWithEventsDispatching("Explanation should resolve its file link", {
-                    text.renderedLinks.any { it.primaryPath == "src/B.java" && it.lines == 1..1 }
-                }, 10)
-            } finally {
-                text.removeNotify()
-            }
-            panel.cancelExplanation()
+            assertEquals(listOf("occurrence 1 calls `src/B.java:L1`", "occurrence 2 calls `src/B.java:L1`"), occurrences.map { it.text })
+            assertEquals(0, linkRequests.get())
+            assertFalse(button.isVisible)
+            // Written briefs render as linked text, so their code references open like the Tree's.
+            assertEquals("occurrence 1 calls `src/B.java:L1`",
+                descendants(occurrences.first()).filterIsInstance<LinkedTextPane>().single().markdown)
+
+            // Reopening the link shows the stored briefs without asking again.
             val reopened = preview(site)
-            assertEquals(markdown, descendants(reopened).filterIsInstance<LinkedTextPane>().single().markdown)
-            assertFalse(descendants(reopened).filterIsInstance<JButton>().single { it.name == button.name }.isEnabled)
-            assertTrue(descendants(preview(site.copy())).filterIsInstance<LinkedTextPane>().isEmpty())
-            assertEquals(1, requests.get())
+            assertEquals(occurrences.map { it.text }, briefLine(reopened, "charts-tree-connection-occurrence-brief").map { it.text })
+            assertFalse(descendants(reopened).filterIsInstance<JButton>().single { it.name == button.name }.isVisible)
+            assertEquals(2, occurrenceRequests.get())
         } finally {
-            panel.cancelExplanation()
+            panel.cancelBriefs()
         }
     }
 
-    fun testExplanationSectionResizesWithWindowAndSplitter() {
-        fun layoutRecursively(component: Component) {
-            component.doLayout()
-            if (component is Container) {
-                component.components.forEach(::layoutRecursively)
-            }
-        }
-
-        val siteWithExplanation = TreeConnectionSite(1, 1).apply {
-            explanation = "Calls `B`."
-        }
+    fun testSingleOccurrenceWindowWritesOnlyTheSharedLinkBrief() {
+        val site = TreeConnectionSite(1, 1, listOf(TreeConnectionOccurrence(RelationKind.CALL, 1, 1)))
+        val occurrenceRequests = AtomicInteger()
         val panel = TreeConnectionPreviewPanel(
-            "src/A.java", "src/B.java", siteWithExplanation, pinned = true,
-            project = project,
-            explain = { "Calls `B`." },
+            "src/A.java", "src/B.java", site, pinned = true, project = project,
+            briefing = TreeConnectionBriefing(
+                link = { _, _, edge -> "calls `B.run`".also { edge.brief = it } },
+                occurrence = { _, _, _, _ -> occurrenceRequests.incrementAndGet(); "unused" },
+            ),
         )
         try {
-            val splitter = descendants(panel).filterIsInstance<OnePixelSplitter>()
-                .single { it.name == "charts-tree-connection-split" }
-            assertTrue(splitter.orientation)
-            val explanation = descendants(panel).filterIsInstance<JComponent>()
-                .single { it.name == "charts-tree-connection-explanation" }
-            assertTrue(explanation.isVisible)
-
-            panel.setSize(640, 420)
-            layoutRecursively(panel)
-            val smallHeight = explanation.height
-            assertTrue("Explanation height should be positive at 420px window height", smallHeight > 0)
-
-            panel.setSize(640, 720)
-            layoutRecursively(panel)
-            val largeHeight = explanation.height
-            assertTrue("Explanation height ($largeHeight) should grow with window height ($smallHeight)", largeHeight > smallHeight)
-
-            splitter.proportion = 0.65f
-            layoutRecursively(panel)
-            val smallerProportionHeight = explanation.height
-            splitter.proportion = 0.30f
-            layoutRecursively(panel)
-            val largerProportionHeight = explanation.height
-            assertTrue(
-                "Moving splitter up should grow explanation height ($largerProportionHeight vs $smallerProportionHeight)",
-                largerProportionHeight > smallerProportionHeight,
-            )
+            assertTrue(briefLine(panel, "charts-tree-connection-occurrence-brief").isEmpty())
+            val link = briefLine(panel, "charts-tree-connection-link-brief").single()
+            assertFalse(link.isVisible)
+            descendants(panel).filterIsInstance<JButton>().single { it.name == "charts-tree-summarize-connection" }.doClick()
+            PlatformTestUtil.waitWithEventsDispatching("Link brief should display", { link.text == "calls `B.run`" }, 10)
+            assertEquals("calls `B.run`", site.brief)
+            assertEquals(0, occurrenceRequests.get())
         } finally {
-            panel.cancelExplanation()
-        }
-
-        val hiddenPanel = TreeConnectionPreviewPanel(
-            "src/A.java", "src/B.java", TreeConnectionSite(1, 1), pinned = true,
-            project = project,
-            explain = { "Calls `B`." },
-        )
-        try {
-            val hiddenSplitter = descendants(hiddenPanel).filterIsInstance<OnePixelSplitter>()
-                .single { it.name == "charts-tree-connection-split" }
-            val snippetsScroll = hiddenSplitter.firstComponent as JBScrollPane
-            val hiddenExplanation = hiddenSplitter.secondComponent as JComponent
-            assertFalse(hiddenExplanation.isVisible)
-
-            hiddenPanel.setSize(640, 420)
-            layoutRecursively(hiddenPanel)
-            assertEquals(hiddenSplitter.height, snippetsScroll.height)
-        } finally {
-            hiddenPanel.cancelExplanation()
+            panel.cancelBriefs()
         }
     }
 
@@ -635,6 +602,13 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
             val clientBrief = board.canvas.briefSegments(client).single()
             assertEquals("→ ", clientBrief.prefix)
             assertEquals("calls `Api.run` to start at api/Api.java:L3", clientBrief.text)
+            // The link window reuses the Tree's link brief instead of asking the model again.
+            board.connectionPreview.pin(TreeConnectionTarget(client, api, summarizedClientSite, client))
+            val window = checkNotNull(board.connectionPreview.activePanel)
+            assertEquals(clientBrief.text, descendants(window).filterIsInstance<TreeConnectionBriefLine>()
+                .single { it.name == "charts-tree-connection-link-brief" }.text)
+            assertEquals(2, requests.get())
+            board.connectionPreview.hide()
             val modelBrief = board.canvas.briefSegments(model).single()
             assertEquals("← ", modelBrief.prefix)
             assertEquals("creates `Model` instances", modelBrief.text)
@@ -735,6 +709,84 @@ class TreeBoardConnectionsTest : LightJavaCodeInsightFixtureTestCase() {
         } finally {
             canvas.dispose()
         }
+    }
+
+    fun testLinkWindowBriefShowsBesideItsRowWithoutBulkBriefsAndEachSummarizeCreatesAClient() {
+        val api = "api/Api.java"
+        val client = "client/Client.java"
+        val model = "model/Model.java"
+        val files = mapOf(
+            api to "package api;\npublic class Api {\n    public static void run() { new model.Model(); }\n}",
+            client to "package client;\nclass Client {\n    void go() { api.Api.run(); }\n}",
+            model to "package model; public class Model {}",
+        ).map { (path, source) ->
+            val psi = myFixture.addFileToProject(path, source)
+            CodeFile(path, psi.virtualFile.path, source)
+        }
+        val requests = AtomicInteger()
+        val clients = AtomicInteger()
+        val newBriefer = {
+            clients.incrementAndGet()
+            TreeBriefer({ request ->
+                requests.incrementAndGet()
+                val input = request.messages.last().content
+                Completion(if (input.lineSequence().first().endsWith("Client.java")) "calls `Api.run` to start" else "creates `Model`")
+            }, emptyList())
+        }
+        val summaries = ReviewSummaries(buildSummaryTree(files))
+        val canvas = NoteCanvas({}, {}, project = project, vocabulary = ReviewVocabulary.CODE,
+            summaryActions = SummaryCanvasActions(
+                contextSummaryActions = ContextSummaryActions({ _, _ -> true }, { _, _ -> true }), treeBriefer = newBriefer,
+            ))
+        fun panel() = descendants(canvas).filterIsInstance<TreeBoardPanel>().single()
+        try {
+            canvas.setSize(1200, 800)
+            canvas.showNotes(CanvasState(emptyList(), charts = ChartsCard(summaries)))
+            descendants(canvas).filterIsInstance<JComboBox<*>>().single { it.name == "charts-type-selector" }.selectedItem = "Tree"
+            clickRowAction(panel(), checkNotNull(panel().connectionButtonScreenBounds(api)))
+            PlatformTestUtil.waitWithEventsDispatching("Api links should resolve",
+                { panel().connectionSelection?.connections != null }, 20)
+            val board = panel()
+            val connections = checkNotNull(board.connectionSelection?.connections)
+            assertNull(board.briefs)
+
+            fun summarizeIn(target: TreeConnectionTarget) {
+                board.connectionPreview.pin(target)
+                val window = checkNotNull(board.connectionPreview.activePanel)
+                descendants(window).filterIsInstance<JButton>().single { it.name == "charts-tree-summarize-connection" }.doClick()
+            }
+            summarizeIn(TreeConnectionTarget(client, api, checkNotNull(connections.incoming[client]), client))
+            PlatformTestUtil.waitWithEventsDispatching("The window's brief should show beside its row",
+                { board.canvas.briefSegments(client).isNotEmpty() }, 20)
+            assertEquals("calls `Api.run` to start", board.canvas.briefSegments(client).single().text)
+            // Only the window's link shows: the file itself and its other links were not summarized.
+            assertFalse(checkNotNull(board.briefs).requested)
+            assertTrue(board.canvas.briefSegments(api).isEmpty())
+            assertTrue(board.canvas.briefSegments(model).isEmpty())
+            assertEquals(1, clients.get())
+
+            // The next Summarize action creates its own client, so it follows changed settings.
+            summarizeIn(TreeConnectionTarget(api, model, checkNotNull(connections.outgoing[model]), model))
+            PlatformTestUtil.waitWithEventsDispatching("The second window's brief should show beside its row",
+                { board.canvas.briefSegments(model).isNotEmpty() }, 20)
+            assertEquals("creates `Model`", board.canvas.briefSegments(model).single().text)
+            assertEquals(2, clients.get())
+            assertEquals(2, requests.get())
+        } finally {
+            canvas.dispose()
+        }
+    }
+
+    fun testLinkBriefMeasuresItsHeightAtTheAllocatedWidth() {
+        val line = TreeConnectionBriefLine("brief", project, project.service<LinkedTextLinks>().coroutineScope, 520) {}
+        line.show(TreeBrief.Ready(List(30) { "word$it" }.joinToString(" ")))
+        val pane = descendants(line).filterIsInstance<LinkedTextPane>().single()
+        PlatformTestUtil.waitWithEventsDispatching("The brief should render", { pane.document.getText(0, pane.document.length).contains("word29") }, 20)
+        val wide = line.preferredSize.height
+        line.setBounds(0, 0, JBUI.scale(520), wide)
+        assertEquals(wide, line.preferredSize.height)
+        line.setBounds(0, 0, JBUI.scale(200), wide)
+        assertTrue(line.preferredSize.height > wide)
     }
 
     fun testBriefsAlignPerDirectoryWithLeaderLinesAndFullRowHoverBand() {

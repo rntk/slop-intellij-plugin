@@ -6,6 +6,7 @@ import dev.insight.llm.CompletionRequest
 import dev.insight.llm.LlmProtocolException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.Assert.*
@@ -119,5 +120,125 @@ class TreeLinkBriefsTest {
         assertEquals(mapOf("A.kt" to TreeBrief.Ready("uses it")), kept.incoming)
         assertEquals(mapOf("C.kt" to TreeBrief.Failed), kept.outgoing)
         assertFalse(kept.running)
+    }
+
+    @Test fun `briefs written only from link windows count just their links`() {
+        val briefs = TreeBriefs("Api.kt", file = null, incoming = mapOf("A.kt" to TreeBrief.Ready("uses it")))
+        assertFalse(briefs.requested)
+        assertEquals(1, briefs.total)
+        assertFalse(briefs.running)
+        assertNull(briefs.withoutPending().file)
+        assertTrue(TreeBriefs.pending("Api.kt").requested)
+    }
+
+    @Test fun `callers asking at once share one call and its result`() = runBlocking {
+        val calls = SharedCalls<TreeConnectionSite, String>(this)
+        val site = TreeConnectionSite(1, 1)
+        val reply = CompletableDeferred<String>()
+        var started = 0
+        val first = async { calls.await(site) { started++; reply.await() } }
+        val second = async { calls.await(site) { started++; "unused" } }
+        yield()
+        reply.complete("uses it")
+        assertEquals("uses it", first.await())
+        assertEquals("uses it", second.await())
+        assertEquals(1, started)
+        // A finished call is not reused: the next caller starts anew.
+        assertEquals("again", calls.await(site) { "again" })
+    }
+
+    @Test fun `a shared call outlives a cancelled caller and stops with the last one`() = runBlocking {
+        val calls = SharedCalls<TreeConnectionSite, String>(this)
+        val site = TreeConnectionSite(1, 1)
+        val reply = CompletableDeferred<String>()
+        var cancelled = false
+        val call: suspend () -> String = {
+            try { reply.await() } catch (e: kotlinx.coroutines.CancellationException) { cancelled = true; throw e }
+        }
+        val window = async { calls.await(site, call) }
+        val tree = async { calls.await(site, call) }
+        yield()
+        window.cancel()
+        yield()
+        assertFalse(cancelled)
+        reply.complete("uses it")
+        assertEquals("uses it", tree.await())
+
+        val lone = async { calls.await(TreeConnectionSite(2, 2)) { try { awaitCancellation() } finally { cancelled = true } } }
+        yield()
+        lone.cancel()
+        lone.join()
+        yield()
+        assertTrue(cancelled)
+    }
+
+    @Test fun `occurrence brief sends only that occurrence with numbered snippets`() = runBlocking {
+        var request: CompletionRequest? = null
+        val site = TreeConnectionSite(12, 4, listOf(
+            TreeConnectionOccurrence(RelationKind.IMPORT, 2, null),
+            TreeConnectionOccurrence(RelationKind.CALL, 12, 4,
+                CodeSnippet(11, 12, listOf("fun run() {", "  service.execute()", "}")),
+                CodeSnippet(4, 4, listOf("fun execute() = work()"))),
+        ), totalOccurrences = 7)
+        val briefer = TreeBriefer({ request = it; Completion("- runs `Service.execute`\nfor the job") }, emptyList())
+
+        assertEquals("runs `Service.execute` for the job", briefer.occurrence("src/A.kt", "src/Service.kt", site, 1))
+        assertTrue(request!!.messages.first().content.contains("this occurrence", ignoreCase = true))
+        val user = request!!.messages.last().content
+        assertTrue(user.contains("Source file: src/A.kt"))
+        assertTrue(user.contains("Occurrence 2 of 7"))
+        assertTrue(user.contains("CALL: src/A.kt:12 → src/Service.kt:4"))
+        assertTrue(user.contains("11| fun run() {\n12|   service.execute()\n13| }"))
+        assertTrue(user.contains("4| fun execute() = work()"))
+        assertFalse(user.contains("IMPORT"))
+    }
+
+    @Test fun `link evidence lists every occurrence and the total`() {
+        val site = TreeConnectionSite(12, 4, listOf(
+            TreeConnectionOccurrence(RelationKind.CALL, 12, 4, CodeSnippet(12, 12, listOf("service.execute()")), null),
+            TreeConnectionOccurrence(RelationKind.IMPORT, 2, null),
+        ), totalOccurrences = 7)
+        val evidence = connectionEvidence("src/A.kt", "src/Service.kt", site)
+        assertTrue(evidence.contains("Target file: src/Service.kt"))
+        assertTrue(evidence.contains("CALL: src/A.kt:12 → src/Service.kt:4"))
+        assertTrue(evidence.contains("IMPORT: src/A.kt:2 → src/Service.kt"))
+        assertTrue(evidence.contains("Total resolved occurrences: 7"))
+        assertTrue(evidence.contains("12| service.execute()"))
+    }
+
+    @Test fun `connection briefs reuse stored briefs and write only the missing ones`() = runBlocking {
+        val site = TreeConnectionSite(1, 1, List(3) { TreeConnectionOccurrence(RelationKind.CALL, it + 1, 1) })
+            .apply { brief = "uses the target"; occurrenceBriefs[1] = "second" }
+        val written = mutableListOf<Int>()
+        val updates = mutableListOf<TreeConnectionBriefs>()
+        val done = briefTreeConnection(site, 3,
+            briefLink = { error("the link brief is stored already") },
+            briefOccurrence = { index ->
+                written += index
+                if (index == 2) error("model failed")
+                "occurrence $index".also { site.occurrenceBriefs[index] = it }
+            },
+            onUpdate = { updates += it },
+        )
+
+        assertEquals(listOf(0, 2), written.sorted())
+        assertEquals(TreeConnectionBriefs(TreeBrief.Ready("uses the target"),
+            listOf(TreeBrief.Pending, TreeBrief.Ready("second"), TreeBrief.Pending)), updates.first())
+        assertEquals(TreeBrief.Ready("uses the target"), done.link)
+        assertEquals(listOf(TreeBrief.Ready("occurrence 0"), TreeBrief.Ready("second"), TreeBrief.Failed), done.occurrences)
+        assertFalse(done.running)
+        assertFalse(done.complete)
+    }
+
+    @Test fun `a single occurrence link needs only the link brief`() = runBlocking {
+        val site = TreeConnectionSite(1, 1, listOf(TreeConnectionOccurrence(RelationKind.CALL, 1, 1)))
+        val done = briefTreeConnection(site, 1,
+            briefLink = { "calls it".also { site.brief = it } },
+            briefOccurrence = { error("no occurrence briefs for a single occurrence") },
+            onUpdate = {},
+        )
+        assertEquals(TreeConnectionBriefs(TreeBrief.Ready("calls it")), done)
+        assertTrue(done.complete)
+        assertEquals(done, TreeConnectionBriefs.stored(site, 1))
     }
 }

@@ -85,7 +85,6 @@ import dev.insight.review.ui.SummaryCanvasActions
 import dev.insight.review.ui.SymbolSummaryActions
 import dev.insight.review.ui.ChartSearchActions
 import dev.insight.review.ChartPathSearch
-import dev.insight.review.TreeConnectionExplainer
 import dev.insight.review.TreeBriefer
 import dev.insight.review.ui.TopicCanvasActions
 import dev.insight.review.ui.findReportSourceFile
@@ -202,10 +201,6 @@ internal class CodeReviewTab(
         summaryActions = SummaryCanvasActions(
             symbolSummaries = SymbolSummaryActions(scope, project.service<SymbolSummaryCache>()) {
                 complete ?: ChatSettings.getInstance().createClient()::complete
-            },
-            explainConnection = { from, to, site ->
-                val completion = complete ?: ChatSettings.getInstance().createClient()::complete
-                TreeConnectionExplainer.explainWithProgress(project, completion, from, to, site)
             },
             treeBriefer = { TreeBriefer.forProject(project, complete ?: ChatSettings.getInstance().createClient()::complete) },
             chartSearch = ChartSearchActions(scope) {

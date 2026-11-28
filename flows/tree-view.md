@@ -22,6 +22,8 @@ A control panel toggle lets the source or diff of the hovered or active file or 
 
 Links between files open a window the same way: it docks beside the linked row, follows the hovered link with the same waits, stays while the pointer is inside, and a click on the link pins it. While a link window is open, the source preview steps aside, so only one window holds the dock.
 
+The link window and the tree share the same one-line link summaries: a link summary written for the tree shows under the window's title, and one written from the window shows beside the tree row. Instead of one long explanation, each occurrence gets its own one-line summary beside its snippets, so readers see which summary belongs to which code. The window reuses summaries that already exist and only asks the model for those still missing.
+
 The [example canvas](../example/canvas/) shows the intended interaction model: one transformed viewport holding the content, the hierarchy rail, and the floating summary.
 
 Entry points for further exploration:
