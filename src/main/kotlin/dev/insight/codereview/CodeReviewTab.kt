@@ -151,7 +151,7 @@ internal class CodeReviewTab(
             "project files are read when a question needs them."
     }, subject = { path -> if (path == WALL_CANVAS_CHAT) "the wall's files" else path.substringAfterLast('/') })
     private val codeCards = CodeCanvasCards(open = { path -> openFile(path, null) }, removeWords = { state.hideWords(); renderCanvas() },
-        chooseWordScope = ::chooseWordScope, openWallFile = { path, line -> openFile(path, line) },
+        chooseWordScope = ::chooseWordScope, chooseWordView = ::chooseWordView, openWallFile = { path, line -> openFile(path, line) },
         showAllFiles = { openCodeWall(state.snapshot.files, ALL_FILES) }, wallChats = wallChats, project = project,
         reviewDestinations = { reviewDestinations() },
         contextSummaryActions = contextSummaryActions,
@@ -166,6 +166,13 @@ internal class CodeReviewTab(
     private var wordScopesOf: List<CodeFile>? = null
     private var wordsJob: Job? = null
     private var wordsTarget: Pair<List<CodeFile>, WordScope>? = null
+    /** The words page shows the words or the constructs; constructs are counted like words, with their own job and results. */
+    private var wordView = CodeWordView.WORDS
+    private var constructCount: WordCount? = null
+    private var allConstructs: WordCount? = null
+    private var constructsJob: Job? = null
+    private var constructsTarget: Pair<List<CodeFile>, WordScope>? = null
+    private var constructsError: String? = null
 
     /** The Knowledge page's runs and content; the knowledge base itself belongs to the project, not this tab. */
     private val knowledge = CodeKnowledge(project, scope, project.service<KnowledgeService>(), complete,
@@ -498,11 +505,8 @@ internal class CodeReviewTab(
      */
     private fun countWords() {
         val files = state.snapshot.files
-        if (wordScopesOf !== files) {
-            wordScopesOf = files
-            wordScopes = pathWordScopes(files.map { it.path }, ALL_FILES)
-            wordScope = wordScopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: wordScopes.first()
-        }
+        listWordScopes(files)
+        if (wordView == CodeWordView.CONSTRUCTS) { countConstructs(files); return }
         val counting = wordScope
         if (wordCount?.counts(files, counting) == true) return
         allWords?.takeIf { it.counts(files, counting) }?.let { wordCount = it; return }
@@ -516,6 +520,52 @@ internal class CodeReviewTab(
             }
             if (disposed || state.snapshot.files !== files || wordScope != counting) return@launch
             wordCount = WordCount(files, counting, counted).also { if (counting.path.isEmpty()) allWords = it }
+            if (state.wordsVisible) renderCanvas()
+        }
+    }
+
+    /** Lists the scopes of [files] again when the files changed; a scope whose files are gone falls back to every file. */
+    private fun listWordScopes(files: List<CodeFile>) {
+        if (wordScopesOf === files) return
+        wordScopesOf = files
+        wordScopes = pathWordScopes(files.map { it.path }, ALL_FILES)
+        wordScope = wordScopes.firstOrNull { it.path == wordScope.path && it.directory == wordScope.directory } ?: wordScopes.first()
+    }
+
+    /** Switches the Words page between the words and the constructs of the scope. */
+    internal fun chooseWordView(view: CodeWordView) {
+        if (view == wordView) return
+        wordView = view
+        countWords()
+        renderCanvas()
+    }
+
+    /** Counts the constructs of [wordScope] like [countWords] counts words; the parsing is done in the background. */
+    private fun countConstructs(files: List<CodeFile>) {
+        val counting = wordScope
+        if (constructCount?.counts(files, counting) == true) return
+        allConstructs?.takeIf { it.counts(files, counting) }?.let { constructCount = it; return }
+        if (constructsJob?.isActive == true && constructsTarget?.let { it.first === files && it.second == counting } == true) return
+        constructsJob?.cancel()
+        constructsTarget = files to counting
+        constructsError = null
+        constructsJob = scope.launch {
+            val counted = try {
+                val job = currentCoroutineContext().job
+                withContext(Dispatchers.Default) { countCodeConstructs(project, files.filter { counting.contains(it.path) }) { job.ensureActive() } }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                if (e is com.intellij.openapi.diagnostic.ControlFlowException || e is VirtualMachineError) throw e
+                LOG.warn("Construct count failed", e)
+                if (!disposed && state.snapshot.files === files && wordScope == counting) {
+                    constructsError = e.message ?: e.javaClass.simpleName
+                    if (state.wordsVisible) renderCanvas()
+                }
+                return@launch
+            }
+            if (disposed || state.snapshot.files !== files || wordScope != counting) return@launch
+            constructCount = WordCount(files, counting, counted).also { if (counting.path.isEmpty()) allConstructs = it }
             if (state.wordsVisible) renderCanvas()
         }
     }
@@ -689,8 +739,11 @@ internal class CodeReviewTab(
 
     override fun renderCanvas() {
         val snapshot = summarySnapshot()
-        codeCards.words = if (state.wordsVisible) CodeWordsPage(wordCount?.words, wordScope, wordScopes,
-            updating = wordCount?.counts(state.snapshot.files, wordScope) != true) else null
+        codeCards.words = if (!state.wordsVisible) null else if (wordView == CodeWordView.CONSTRUCTS)
+            CodeWordsPage(constructCount?.words, wordScope, wordScopes, updating = constructCount?.counts(state.snapshot.files, wordScope) != true,
+                view = wordView, failed = constructsError.takeIf { constructCount?.counts(state.snapshot.files, wordScope) != true })
+        else CodeWordsPage(wordCount?.words, wordScope, wordScopes,
+            updating = wordCount?.counts(state.snapshot.files, wordScope) != true)
         codeCards.knowledge = if (state.knowledgeVisible) knowledge.content() else null
         codeCards.wall = state.wallScope?.let { CodeWallContent(it, state.wallFiles, snapshot.files) }
         canvas.showNotes(CanvasState(state.notes, state.sources, summaries = summariesCard(snapshot), topics = topicsCard(), fileView = fileViewCard(),
@@ -777,6 +830,7 @@ internal class CodeReviewTab(
 
     override fun dispose() {
         wordsJob?.cancel()
+        constructsJob?.cancel()
         holding = false
         pendingSnapshot = null
         super.dispose()

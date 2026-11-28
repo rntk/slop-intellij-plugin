@@ -29,6 +29,7 @@ import dev.insight.review.ui.SnapshotCanvasCards
 import dev.insight.review.ui.SummariesCard
 import dev.insight.review.ui.SummaryDiffView
 import dev.insight.review.ui.pillToolbarRow
+import dev.insight.review.ui.viewSelector
 import dev.insight.review.wall.WallChats
 import dev.insight.ui.zoomScaled
 import dev.insight.ui.zoomed
@@ -42,14 +43,16 @@ import javax.swing.JPanel
 import javax.swing.SwingConstants
 
 /**
- * The Words page while it is shown: the words of [scope], one of [scopes]. [words] is null until the first count is done, and
- * stays the last count while [updating].
+ * The Words page while it is shown: the [view] of [scope], one of [scopes]. [words] is null until the first count is done, and
+ * stays the last count while [updating]; [failed] explains why constructs could not be counted.
  */
 internal data class CodeWordsPage(
     val words: CodeWords?,
     val scope: WordScope,
     val scopes: List<WordScope>,
     val updating: Boolean = false,
+    val view: CodeWordView = CodeWordView.WORDS,
+    val failed: String? = null,
 )
 
 /** Optional context-aware wall link dependencies passed to [CodeCanvasCards]. */
@@ -69,6 +72,8 @@ internal class CodeCanvasCards(
     private val removeWords: () -> Unit = {},
     /** Counts the words of one file or directory of the scope. */
     private val chooseWordScope: (WordScope) -> Unit = {},
+    /** Switches the Words page between the words and the constructs of the scope. */
+    private val chooseWordView: (CodeWordView) -> Unit = {},
     /** Opens a wall block's file in the editor, at the double-clicked line when there is one. */
     openWallFile: (path: String, line: Int?) -> Unit = { _, _ -> },
     /** Shows every file of the scope on the wall. */
@@ -86,6 +91,7 @@ internal class CodeCanvasCards(
         open: (String) -> Unit,
         removeWords: () -> Unit,
         chooseWordScope: (WordScope) -> Unit,
+        chooseWordView: (CodeWordView) -> Unit,
         openWallFile: (path: String, line: Int?) -> Unit,
         showAllFiles: () -> Unit,
         wallChats: WallChats?,
@@ -93,7 +99,7 @@ internal class CodeCanvasCards(
         reviewDestinations: () -> Map<ReviewDestination, () -> Unit>,
         contextSummaryActions: ContextSummaryActions?,
         wallLinks: CodeWallLinks,
-    ) : this(open, removeWords, chooseWordScope, openWallFile, showAllFiles, wallChats, project, reviewDestinations,
+    ) : this(open, removeWords, chooseWordScope, chooseWordView, openWallFile, showAllFiles, wallChats, project, reviewDestinations,
         contextSummaryActions) {
         this.wallLinks = wallLinks
     }
@@ -181,22 +187,30 @@ internal class CodeCanvasCards(
     private fun wordsCard(page: CodeWordsPage): JPanel {
         val width = scaled(WORDS_WIDTH)
         val words = page.words
+        val constructs = page.view == CodeWordView.CONSTRUCTS
         val header = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.compound(JBUI.Borders.customLineBottom(JBColor.border()), JBUI.Borders.empty(8, 12, 8, 8))
             add(JLabel(when {
+                constructs && words == null -> "Constructs · Counting the constructs in scope…"
                 words == null -> "Words · Counting the words in scope…"
+                constructs -> "Constructs · ${words.words.size} source constructs, ${words.totalWords} occurrences" +
+                    if (page.updating) " · updating…" else ""
                 else -> "Words · ${words.words.size} most frequent of ${words.distinctWords} words" +
                     if (page.updating) " · updating…" else ""
             }).apply {
                 font = scaledFont(JBFont.small()); foreground = UIUtil.getContextHelpForeground()
                 val counted = if (page.scope.path.isEmpty()) "the source files in scope" else page.scope.path
-                toolTipText = "Counted from $counted${words?.let { " · ${it.totalWords} words in all" }.orEmpty()}. " +
+                toolTipText = if (constructs) "Source constructs (if, loop, return, literals, TODOs…) counted in $counted. " +
+                    "A construct's size and color show how often it occurs; the most frequent sit in the middle. Click one to open its files."
+                else "Counted from $counted${words?.let { " · ${it.totalWords} words in all" }.orEmpty()}. " +
                     "A word's size and color show how often it occurs; the most frequent sit in the middle. " +
                     "Click a word to open its files."
             }, BorderLayout.CENTER)
             add(pillToolbarRow(
                 listOf(wordScopeButton(page)),
+                listOf(viewSelector("words-view", CodeWordView.entries, page.view, 0, scaledFont(JBFont.small()),
+                    CodeWordView::label, CodeWordView::hint, chooseWordView)),
                 listOf(InplaceButton(IconButton("Remove words", AllIcons.Actions.Close, AllIcons.Actions.CloseHovered)) { removeWords() }
                     .apply { cursor = Cursor.getDefaultCursor() }),
             ), BorderLayout.WEST)
@@ -205,8 +219,9 @@ internal class CodeCanvasCards(
             isOpaque = false
             border = JBUI.Borders.empty(10, PADDING, 12, PADDING)
             add(when {
+                page.failed != null -> JLabel("Could not count constructs: ${page.failed}").apply { foreground = UIUtil.getContextHelpForeground() }
                 words == null -> JLabel("Counting…").apply { foreground = UIUtil.getContextHelpForeground() }
-                words.words.isEmpty() -> JLabel("No words in the files in scope.").apply { foreground = UIUtil.getContextHelpForeground() }
+                words.words.isEmpty() -> JLabel(if (constructs) "No constructs in the files in scope." else "No words in the files in scope.").apply { foreground = UIUtil.getContextHelpForeground() }
                 else -> cloud?.takeIf { it.words === words }
                     ?: CodeWordCloud(words, width - scaled(2 * PADDING + 4), scaled(WORDS_HEIGHT), ::openWord).also { cloud = it }
             }, BorderLayout.CENTER)
